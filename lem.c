@@ -214,6 +214,7 @@ void setupEffect()
   // setup the effect queue
   curr_effect = gst_bin_get_by_name( GST_BIN(pipeline), "effect");
   conv_before = gst_bin_get_by_name( GST_BIN(pipeline), "conv_before");
+  printf("conv_before:%p\n", conv_before);
   conv_after = gst_bin_get_by_name( GST_BIN(pipeline), "conv_after");
 
   effect_names = g_strsplit (DEFAULT_EFFECTS, ",", -1);
@@ -241,8 +242,11 @@ main (int argc, char *argv[])
     GstBus *bus;
     guint bus_watch_id;
 
-    char *c = "udpsrc uri=udp://0.0.0.0:25011 ! parsebin name=p ! decodebin name=d ! queue name=q0 ! autovideoconvert name=conv_before ! solarize name=effect ! autovideoconvert name=conv_after ! videoscale ! video/x-raw,width=640,height=480 ! x264enc bitrate=1000 ! mpegtsmux alignment=7 ! filesink location=dump.ts";
+    /*
+    char *c = "filesrc location=testclip.ts ! parsebin name=p ! decodebin name=d ! queue name=q0 ! autovideoconvert name=conv_before ! solarize name=effect ! autovideoconvert name=conv_after ! videoscale ! video/x-raw,width=640,height=480 ! x264enc bitrate=1000 ! mpegtsmux alignment=7 ! filesink location=dump.ts";
+    */
 
+    char *c = "filesrc location=testclip.ts ! parsebin name=p ! decodebin name=d ! queue name=q0 ! videoscale ! video/x-raw,width=640,height=480 ! x264enc bitrate=1000 name=enc ! mpegtsmux alignment=7 ! filesink location=dump.ts";
     /* Initialize GStreamer */
     gst_init (&argc, &argv);
     loop = g_main_loop_new (NULL, FALSE);
@@ -258,9 +262,18 @@ main (int argc, char *argv[])
     /* Effect initialization */
     setupEffect();
     {
-        GstElement *a = gst_bin_get_by_name( GST_BIN(pipeline), "p");
-        GstElement *b = gst_bin_get_by_name( GST_BIN(pipeline), "d");
-        g_signal_connect (a, "pad-added", G_CALLBACK (on_pad_added), b);
+        GstElement *a = gst_bin_get_by_name( GST_BIN(pipeline), "enc");
+	printf("1:%p\n", a);
+	GstElementClass *c = GST_ELEMENT_GET_CLASS(a);
+	printf("2:%p\n", c);
+	printf("\tAuthor: %s\n", gst_element_class_get_metadata(c, GST_ELEMENT_METADATA_AUTHOR));
+	printf("\tDescription: %s\n", gst_element_class_get_metadata(c, GST_ELEMENT_METADATA_DESCRIPTION));
+	printf("\turi: %s\n", gst_element_class_get_metadata(c, GST_ELEMENT_METADATA_DOC_URI));
+	printf("\ticonname: %s\n", gst_element_class_get_metadata(c, GST_ELEMENT_METADATA_ICON_NAME));
+	printf("\tklass: %s\n", gst_element_class_get_metadata(c, GST_ELEMENT_METADATA_KLASS));
+	printf("\tlongname: %s\n", gst_element_class_get_metadata(c, GST_ELEMENT_METADATA_LONGNAME));
+
+        //g_signal_connect (a, "pad-added", G_CALLBACK (on_pad_added), b);
     }
     
     /* Start playing */
@@ -270,7 +283,7 @@ main (int argc, char *argv[])
 
     /* Iterate */
     g_print ("Running...\n");
-    g_timeout_add_seconds (5, timeout_cb, loop);
+    //g_timeout_add_seconds (5, timeout_cb, loop);
     g_main_loop_run (loop);
 
     /* Out of the main loop, clean up nicely */
