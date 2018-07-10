@@ -123,13 +123,19 @@ struct _MyBaseSrcPrivate
 #define MY_BASE_SRC_HAS_PENDING_BUFFER_LIST(src) \
     ((src)->priv->pending_bufferlist != NULL)
 
+static GstStaticPadTemplate tee_src_template = GST_STATIC_PAD_TEMPLATE ("src%d",
+    GST_PAD_SRC,
+    GST_PAD_REQUEST,
+    GST_STATIC_CAPS_ANY);
+
 static GstElementClass *parent_class = NULL;
 static gint private_offset = 0;
 
 static void gst_base_src_class_init (MyBaseSrcClass * klass);
 static void gst_base_src_init (MyBaseSrc * src, gpointer g_class);
 static void gst_base_src_finalize (GObject * object);
-
+static GstPad *gst_tee_request_new_pad (GstElement * element,
+    GstPadTemplate * temp, const gchar * unused);
 
 GType
 gst_base_src_get_type (void)
@@ -264,6 +270,7 @@ gst_base_src_class_init (MyBaseSrcClass * klass)
   gstelement_class->change_state =
       GST_DEBUG_FUNCPTR (gst_base_src_change_state);
   gstelement_class->send_event = GST_DEBUG_FUNCPTR (gst_base_src_send_event);
+  gstelement_class->request_new_pad = gst_tee_request_new_pad;
 
   klass->get_caps = GST_DEBUG_FUNCPTR (gst_base_src_default_get_caps);
   klass->negotiate = GST_DEBUG_FUNCPTR (gst_base_src_default_negotiate);
@@ -286,6 +293,32 @@ gst_base_src_class_init (MyBaseSrcClass * klass)
   GST_DEBUG_REGISTER_FUNCPTR (gst_base_src_fixate);
 }
 
+static GstPad *
+gst_tee_request_new_pad (GstElement *element, GstPadTemplate *template, const gchar *unused)
+{
+    gchar *name;
+    GstPad *pad;
+    MyBaseSrc *basesrc;
+
+    basesrc = GST_MY_BASE_SRC_CAST (element);
+    name = g_strdup_printf ("src%d", basesrc->pad_counter++);
+    pad = gst_pad_new_from_template (template, name);
+    g_print("\n\t\t\t\ttotalpad:%u\n", g_queue_get_length(&basesrc->pad_queue));
+    g_print("\n\t\t\trequest new pad:%p | %s\n", pad, name);
+    g_free(name);
+    gst_pad_set_activatemode_function (pad, gst_base_src_activate_mode);
+    gst_pad_set_event_function (pad, gst_base_src_event);
+    gst_pad_set_query_function (pad, gst_base_src_query);
+    gst_pad_set_getrange_function (pad, gst_base_src_getrange);
+
+    basesrc->srcpad = pad;
+    gst_element_add_pad (GST_ELEMENT (basesrc), pad);
+    g_queue_push_tail(&basesrc->pad_queue, pad);
+    g_print("\n\t\t\t\ttotalpad:%u\n", g_queue_get_length(&basesrc->pad_queue));
+
+    return pad;
+}
+
 static void
 gst_base_src_init (MyBaseSrc * basesrc, gpointer g_class)
 {
@@ -293,17 +326,23 @@ gst_base_src_init (MyBaseSrc * basesrc, gpointer g_class)
   GstPadTemplate *pad_template;
   GstPadMode mode;
 
-  basesrc->priv = gst_base_src_get_instance_private (basesrc);
-
-  basesrc->is_live = FALSE;
   g_mutex_init (&basesrc->live_lock);
   g_cond_init (&basesrc->live_cond);
+
+  basesrc->priv = gst_base_src_get_instance_private (basesrc);
+  basesrc->is_live = FALSE;
   basesrc->num_buffers = DEFAULT_NUM_BUFFERS;
   basesrc->num_buffers_left = -1;
   basesrc->priv->automatic_eos = TRUE;
-
   basesrc->can_activate_push = TRUE;
+  basesrc->pad_counter = 0;
+  g_queue_init(&basesrc->pad_queue);
 
+  gst_element_class_add_pad_template (GST_ELEMENT_CLASS (g_class),
+        gst_static_pad_template_get (&tee_src_template));
+
+
+/*
   pad_template = gst_element_class_get_pad_template (GST_ELEMENT_CLASS (g_class), "src");
   g_return_if_fail (pad_template != NULL);
 
@@ -316,10 +355,10 @@ gst_base_src_init (MyBaseSrc * basesrc, gpointer g_class)
   gst_pad_set_query_function (pad, gst_base_src_query);
   gst_pad_set_getrange_function (pad, gst_base_src_getrange);
 
-  /* hold pointer to pad */
   basesrc->srcpad = pad;
   GST_DEBUG_OBJECT (basesrc, "adding src pad");
   gst_element_add_pad (GST_ELEMENT (basesrc), pad);
+*/
 
   basesrc->blocksize = DEFAULT_BLOCKSIZE;
   basesrc->clock_id = NULL;
@@ -756,6 +795,33 @@ gst_base_src_send_stream_start (MyBaseSrc * src)
   if (src->priv->stream_start_pending) {
     gchar *stream_id;
     GstEvent *event;
+    GstPad *tmpPad;
+
+    g_print("\n\n heree!!!!\n\n");
+
+    int i = 0;
+    gint length = g_queue_get_length(&src->pad_queue);
+/*
+    for (i = 0; i < length; i++) {
+        tmpPad = g_queue_peek_nth (&src->pad_queue, i);
+        stream_id = gst_pad_create_stream_id (tmpPad, GST_ELEMENT_CAST (src), NULL);
+        g_print("stream_id:%s\n", stream_id);
+        event = gst_event_new_stream_start (stream_id);
+        gst_event_set_group_id (event, gst_util_group_id_next ());
+        ret = gst_pad_push_event (tmpPad, event);
+        g_free (stream_id);
+    }
+*/
+    src->priv->stream_start_pending = FALSE;
+  }
+
+
+
+
+/*
+  if (src->priv->stream_start_pending) {
+    gchar *stream_id;
+    GstEvent *event;
 
     stream_id =
         gst_pad_create_stream_id (src->srcpad, GST_ELEMENT_CAST (src), NULL);
@@ -769,6 +835,7 @@ gst_base_src_send_stream_start (MyBaseSrc * src)
     src->priv->stream_start_pending = FALSE;
     g_free (stream_id);
   }
+*/
 
   return ret;
 }
@@ -3281,6 +3348,7 @@ gst_base_src_start (MyBaseSrc * basesrc)
   if (!result)
     goto could_not_start;
 
+  g_print("here\n");
   if (!gst_base_src_is_async (basesrc)) {
     gst_base_src_start_complete (basesrc, GST_FLOW_OK);
     /* not really waiting here, we call this to get the result
@@ -3374,25 +3442,36 @@ gst_base_src_start_complete (MyBaseSrc * basesrc, GstFlowReturn ret)
 
   GST_DEBUG_OBJECT (basesrc, "is random_access: %d", basesrc->random_access);
 
-  gst_pad_mark_reconfigure (GST_MY_BASE_SRC_PAD (basesrc));
+  //gst_pad_mark_reconfigure (GST_MY_BASE_SRC_PAD (basesrc));
 
+  {
+    GstPad *tmpPad;
+    int i = 0;
+    gint length = g_queue_get_length(&basesrc->pad_queue);
+    for (i = 0; i < length; i++) {
+        tmpPad = g_queue_peek_nth (&basesrc->pad_queue, i);
+        gst_pad_mark_reconfigure (tmpPad);
+        g_print("get pad:%p\n", tmpPad);
+    }
+    
+  }
+/*
   GST_OBJECT_LOCK (basesrc->srcpad);
   mode = GST_PAD_MODE (basesrc->srcpad);
   GST_OBJECT_UNLOCK (basesrc->srcpad);
+*/
 
   /* take the stream lock here, we only want to let the task run when we have
    * set the STARTED flag */
   GST_PAD_STREAM_LOCK (basesrc->srcpad);
+/*
   switch (mode) {
     case GST_PAD_MODE_PUSH:
-      /* do initial seek, which will start the task */
       GST_OBJECT_LOCK (basesrc);
       event = basesrc->pending_seek;
       basesrc->pending_seek = NULL;
       GST_OBJECT_UNLOCK (basesrc);
 
-      /* The perform seek code will start the task when finished. We don't have to
-       * unlock the streaming thread because it is not running yet */
       if (G_UNLIKELY (!gst_base_src_perform_seek (basesrc, event, FALSE)))
         goto seek_failed;
 
@@ -3400,7 +3479,6 @@ gst_base_src_start_complete (MyBaseSrc * basesrc, GstFlowReturn ret)
         gst_event_unref (event);
       break;
     case GST_PAD_MODE_PULL:
-      /* if not random_access, we cannot operate in pull mode for now */
       if (G_UNLIKELY (!basesrc->random_access))
         goto no_get_range;
       break;
@@ -3408,6 +3486,7 @@ gst_base_src_start_complete (MyBaseSrc * basesrc, GstFlowReturn ret)
       goto not_activated_yet;
       break;
   }
+*/
 
   GST_OBJECT_LOCK (basesrc);
   GST_OBJECT_FLAG_SET (basesrc, GST_MY_BASE_SRC_FLAG_STARTED);
@@ -3613,6 +3692,8 @@ gst_base_src_set_playing (MyBaseSrc * basesrc, gboolean live_play)
 
   if (live_play) {
     gboolean start;
+    GstPad *tmpPad;
+    gint i;
 
     /* for live sources we restart the timestamp correction */
     GST_OBJECT_LOCK (basesrc);
@@ -3620,6 +3701,24 @@ gst_base_src_set_playing (MyBaseSrc * basesrc, gboolean live_play)
     GST_OBJECT_UNLOCK (basesrc);
     /* have to restart the task in case it stopped because of the unlock when
      * we went to PAUSED. Only do this if we operating in push mode. */
+    gint length = g_queue_get_length(&basesrc->pad_queue);
+    for (i = 0; i < length; i++) {
+        tmpPad = g_queue_peek_nth (&basesrc->pad_queue, i);
+        g_print("start base src loop on pad:%p\n", tmpPad);
+        GST_OBJECT_LOCK (basesrc->srcpad);
+        start = (GST_PAD_MODE (basesrc->srcpad) == GST_PAD_MODE_PUSH);
+        GST_OBJECT_UNLOCK (basesrc->srcpad);
+        if (start) {
+            g_print("start now! on pad:%p\n", tmpPad);
+            gst_pad_start_task (tmpPad, (GstTaskFunction) gst_base_src_loop, tmpPad, NULL);
+        }
+
+    }
+ 
+
+
+
+/*
     GST_OBJECT_LOCK (basesrc->srcpad);
     start = (GST_PAD_MODE (basesrc->srcpad) == GST_PAD_MODE_PUSH);
     GST_OBJECT_UNLOCK (basesrc->srcpad);
@@ -3627,6 +3726,7 @@ gst_base_src_set_playing (MyBaseSrc * basesrc, gboolean live_play)
         gst_pad_start_task (basesrc->srcpad, (GstTaskFunction) gst_base_src_loop,
                 basesrc->srcpad, NULL);
     }
+*/
     GST_DEBUG_OBJECT (basesrc, "signal");
     GST_LIVE_SIGNAL (basesrc);
   }
@@ -3645,6 +3745,7 @@ gst_base_src_activate_push (GstPad * pad, GstObject * parent, gboolean active)
   /* prepare subclass first */
   if (active) {
     GST_DEBUG_OBJECT (basesrc, "Activating in push mode");
+    g_print("Activating in push mode\n");
 
     if (G_UNLIKELY (!basesrc->can_activate_push))
       goto no_push_activation;
@@ -3657,21 +3758,25 @@ gst_base_src_activate_push (GstPad * pad, GstObject * parent, gboolean active)
     if (G_UNLIKELY (!gst_base_src_stop (basesrc)))
       goto error_stop;
   }
+    g_print("activate push success\n");
   return TRUE;
 
   /* ERRORS */
 no_push_activation:
   {
+    g_print("Subclass disabled push-mode activation\n");
     GST_WARNING_OBJECT (basesrc, "Subclass disabled push-mode activation");
     return FALSE;
   }
 error_start:
   {
+    g_print("Failed to start in push mode\n");
     GST_WARNING_OBJECT (basesrc, "Failed to start in push mode");
     return FALSE;
   }
 error_stop:
   {
+    g_print("Failed to stop in push mode\n");
     GST_DEBUG_OBJECT (basesrc, "Failed to stop in push mode");
     return FALSE;
   }
@@ -3719,13 +3824,14 @@ gst_base_src_activate_mode (GstPad * pad, GstObject * parent,
   src->priv->stream_start_pending = FALSE;
 
   GST_DEBUG_OBJECT (pad, "activating in mode %d", mode);
-  g_print("activating in mode %d\n", mode);
 
   switch (mode) {
     case GST_PAD_MODE_PULL:
+        g_print("activating in pull mode %d\n", mode);
       res = gst_base_src_activate_pull (pad, parent, active);
       break;
     case GST_PAD_MODE_PUSH:
+        g_print("activating in push mode: %p\n", pad);
       src->priv->stream_start_pending = active;
       res = gst_base_src_activate_push (pad, parent, active);
       break;
@@ -3751,11 +3857,14 @@ gst_base_src_change_state (GstElement * element, GstStateChange transition)
 
   switch (transition) {
     case GST_STATE_CHANGE_NULL_TO_READY:
+        g_print("GST_STATE_CHANGE_NULL_TO_READY\n");
       break;
     case GST_STATE_CHANGE_READY_TO_PAUSED:
+        g_print("GST_STATE_CHANGE_READY_TO_PAUSED\n");
       no_preroll = gst_base_src_is_live (basesrc);
       break;
     case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
+        g_print("GST_STATE_CHANGE_PAUSED_TO_PLAYING\n");
       GST_DEBUG_OBJECT (basesrc, "PAUSED->PLAYING");
       if (gst_base_src_is_live (basesrc)) {
         /* now we can start playback */

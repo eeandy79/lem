@@ -80,6 +80,8 @@ struct _MyBaseSrc {
 
   /*< protected >*/
   GstPad        *srcpad;
+  gint           pad_counter;
+  GQueue         pad_queue;
 
   /* available to subclass implementations */
   /* MT-protected (with LIVE_LOCK) */

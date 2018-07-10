@@ -80,7 +80,7 @@ tfi_sdi_src_class_init (TfiSdiSrcClass * klass)
             "TFI SDI source", "Source/Video",
             "Integrate with Blackmagic SDI card", "Andy Chang <andy.chang@tfidm.com>");
 
-    gst_element_class_add_static_pad_template (gstelement_class, &video_src_template);
+    //gst_element_class_add_static_pad_template (gstelement_class, &video_src_template);
     //gst_element_class_add_static_pad_template (gstelement_class, &audio_src_template);
 
 /*
