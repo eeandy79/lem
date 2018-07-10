@@ -2,7 +2,8 @@
 #define __GST_TFI_SDI_SRC_H__
 
 #include <gst/gst.h>
-#include <gst/base/gstbasesrc.h>
+//#include <gst/base/gstbasesrc.h>
+#include "mybasesrc.h"
 
 G_BEGIN_DECLS
 
@@ -12,11 +13,13 @@ typedef struct _TfiSdiSrc TfiSdiSrc;
 typedef struct _TfiSdiSrcClass TfiSdiSrcClass;
 
 struct _TfiSdiSrc {
-  GstBaseSrc element;
+  //GstBaseSrc element;
+  MyBaseSrc element;
 };
 
 struct _TfiSdiSrcClass {
-  GstBaseSrcClass parent_class;
+  //GstBaseSrcClass parent_class;
+  MyBaseSrcClass parent_class;
 };
 
 GType tfi_sdi_src_get_type (void);

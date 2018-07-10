@@ -10,11 +10,11 @@ GST_DEBUG_CATEGORY_STATIC (tfi_sdi_src_debug);
 #define GST_CAT_DEFAULT tfi_sdi_src_debug
 #define DEFAULT_IS_LIVE TRUE
 
-#define GST_LIVE_GET_LOCK(elem)               (&GST_BASE_SRC_CAST(elem)->live_lock)
+#define GST_LIVE_GET_LOCK(elem)               (&GST_MY_BASE_SRC_CAST(elem)->live_lock)
 #define GST_LIVE_LOCK(elem)                   g_mutex_lock(GST_LIVE_GET_LOCK(elem))
 #define GST_LIVE_TRYLOCK(elem)                g_mutex_trylock(GST_LIVE_GET_LOCK(elem))
 #define GST_LIVE_UNLOCK(elem)                 g_mutex_unlock(GST_LIVE_GET_LOCK(elem))
-#define GST_LIVE_GET_COND(elem)               (&GST_BASE_SRC_CAST(elem)->live_cond)
+#define GST_LIVE_GET_COND(elem)               (&GST_MY_BASE_SRC_CAST(elem)->live_cond)
 #define GST_LIVE_WAIT(elem)                   g_cond_wait (GST_LIVE_GET_COND (elem), GST_LIVE_GET_LOCK (elem))
 #define GST_LIVE_WAIT_UNTIL(elem, end_time)   g_cond_timed_wait (GST_LIVE_GET_COND (elem), GST_LIVE_GET_LOCK (elem), end_time)
 #define GST_LIVE_SIGNAL(elem)                 g_cond_signal (GST_LIVE_GET_COND (elem));
@@ -38,27 +38,27 @@ GST_STATIC_PAD_TEMPLATE ("audio%u",
 
 #define _do_init \
     GST_DEBUG_CATEGORY_INIT (tfi_sdi_src_debug, "tfi_sdi_src", 0, "TFI SDI source plugin");
-G_DEFINE_TYPE_WITH_CODE (TfiSdiSrc, tfi_sdi_src, GST_TYPE_BASE_SRC, _do_init);
+G_DEFINE_TYPE_WITH_CODE (TfiSdiSrc, tfi_sdi_src, GST_TYPE_MY_BASE_SRC, _do_init);
 
 static void gst_sdi_src_set_property (GObject *object, guint prop_id, const GValue *value, GParamSpec *pspec);
 static void gst_sdi_src_get_property (GObject *object, guint prop_id, GValue *value, GParamSpec *pspec);
-static GstCaps *tfi_sdi_src_src_fixate (GstBaseSrc *bsrc, GstCaps *caps);
-static void tfi_sdi_src_get_times (GstBaseSrc *basesrc, GstBuffer *buffer, GstClockTime *start, GstClockTime *end);
-static gboolean tfi_sdi_src_decide_allocation (GstBaseSrc *bsrc, GstQuery *query);
-static GstFlowReturn tfi_sdi_src_fill (GstBaseSrc *bsrc, guint64 offset, guint length, GstBuffer * ret);
-static gboolean tfi_sdi_src_start (GstBaseSrc *basesrc);
-static gboolean tfi_sdi_src_stop (GstBaseSrc *basesrc);
-static gboolean tfi_sdi_src_query (GstBaseSrc * src, GstQuery * query);
-static GstFlowReturn tfi_sdi_src_alloc (GstBaseSrc * src, guint64 offset,
+static GstCaps *tfi_sdi_src_src_fixate (MyBaseSrc *bsrc, GstCaps *caps);
+static void tfi_sdi_src_get_times (MyBaseSrc *basesrc, GstBuffer *buffer, GstClockTime *start, GstClockTime *end);
+static gboolean tfi_sdi_src_decide_allocation (MyBaseSrc *bsrc, GstQuery *query);
+static GstFlowReturn tfi_sdi_src_fill (MyBaseSrc *bsrc, guint64 offset, guint length, GstBuffer * ret);
+static gboolean tfi_sdi_src_start (MyBaseSrc *basesrc);
+static gboolean tfi_sdi_src_stop (MyBaseSrc *basesrc);
+static gboolean tfi_sdi_src_query (MyBaseSrc * src, GstQuery * query);
+static GstFlowReturn tfi_sdi_src_alloc (MyBaseSrc * src, guint64 offset,
     guint size, GstBuffer ** buffer);
 static GstFlowReturn
-tfi_sdi_src_create (GstBaseSrc * src, guint64 offset, guint size, GstBuffer ** buffer);
+tfi_sdi_src_create (MyBaseSrc * src, guint64 offset, guint size, GstBuffer ** buffer);
 static gboolean
-tfi_sdi_src_do_seek (GstBaseSrc * src, GstSegment * segment);
+tfi_sdi_src_do_seek (MyBaseSrc * src, GstSegment * segment);
 static GstStateChangeReturn
 tfi_sdi_src_change_state (GstElement * element, GstStateChange transition);
 static gboolean
-tfi_sdi_src_set_playing (GstBaseSrc * basesrc, gboolean live_play);
+tfi_sdi_src_set_playing (MyBaseSrc * basesrc, gboolean live_play);
 static void
 gst_base_src_loop (GstPad * pad);
 
@@ -67,11 +67,11 @@ tfi_sdi_src_class_init (TfiSdiSrcClass * klass)
 {
     GObjectClass *gobject_class;
     GstElementClass *gstelement_class;
-    GstBaseSrcClass *gstbasesrc_class;
+    MyBaseSrcClass *gstbasesrc_class;
 
     gobject_class = (GObjectClass *) klass;
     gstelement_class = (GstElementClass *) klass;
-    gstbasesrc_class = (GstBaseSrcClass *) klass;
+    gstbasesrc_class = (MyBaseSrcClass *) klass;
 
     gobject_class->set_property = gst_sdi_src_set_property;
     gobject_class->get_property = gst_sdi_src_get_property;
@@ -116,7 +116,7 @@ tfi_sdi_src_class_init (TfiSdiSrcClass * klass)
 }
 
 static GstFlowReturn
-tfi_sdi_src_alloc (GstBaseSrc * src, guint64 offset, guint size, GstBuffer ** buffer)
+tfi_sdi_src_alloc (MyBaseSrc * src, guint64 offset, guint size, GstBuffer ** buffer)
 {
     GstMemory *memory;
     *buffer = gst_buffer_new();
@@ -128,12 +128,12 @@ tfi_sdi_src_alloc (GstBaseSrc * src, guint64 offset, guint size, GstBuffer ** bu
 static void
 tfi_sdi_src_init (TfiSdiSrc *src)
 {
-    gst_base_src_set_format (GST_BASE_SRC (src), GST_FORMAT_TIME);
-    gst_base_src_set_live (GST_BASE_SRC (src), DEFAULT_IS_LIVE);
+    gst_base_src_set_format (GST_MY_BASE_SRC (src), GST_FORMAT_TIME);
+    gst_base_src_set_live (GST_MY_BASE_SRC (src), DEFAULT_IS_LIVE);
 }
 
 static GstCaps *
-tfi_sdi_src_src_fixate (GstBaseSrc *bsrc, GstCaps *caps)
+tfi_sdi_src_src_fixate (MyBaseSrc *bsrc, GstCaps *caps)
 {
     return NULL;
 }
@@ -149,13 +149,13 @@ gst_sdi_src_get_property (GObject *object, guint prop_id, GValue *value, GParamS
 }
 
 static gboolean
-tfi_sdi_src_decide_allocation (GstBaseSrc *bsrc, GstQuery *query)
+tfi_sdi_src_decide_allocation (MyBaseSrc *bsrc, GstQuery *query)
 {
     return TRUE;
 }
 
 static void
-tfi_sdi_src_get_times (GstBaseSrc *basesrc, GstBuffer *buffer, GstClockTime *start, GstClockTime *end)
+tfi_sdi_src_get_times (MyBaseSrc *basesrc, GstBuffer *buffer, GstClockTime *start, GstClockTime *end)
 {
     /* for live sources, sync on the timestamp of the buffer */
     if (gst_base_src_is_live (basesrc)) {
@@ -179,7 +179,7 @@ tfi_sdi_src_get_times (GstBaseSrc *basesrc, GstBuffer *buffer, GstClockTime *sta
 }
 
 static GstFlowReturn
-tfi_sdi_src_fill (GstBaseSrc *bsrc, guint64 offset, guint length, GstBuffer *ret)
+tfi_sdi_src_fill (MyBaseSrc *bsrc, guint64 offset, guint length, GstBuffer *ret)
 {
 /*
     //exit(0);
@@ -190,28 +190,28 @@ tfi_sdi_src_fill (GstBaseSrc *bsrc, guint64 offset, guint length, GstBuffer *ret
 }
 
 static gboolean
-tfi_sdi_src_start (GstBaseSrc *basesrc)
+tfi_sdi_src_start (MyBaseSrc *basesrc)
 {
     return TRUE;
 }
 
 static gboolean
-tfi_sdi_src_stop (GstBaseSrc *basesrc)
+tfi_sdi_src_stop (MyBaseSrc *basesrc)
 {
     return TRUE;
 }
 
 static gboolean 
-tfi_sdi_src_query (GstBaseSrc * src, GstQuery * query)
+tfi_sdi_src_query (MyBaseSrc * src, GstQuery * query)
 {
     gboolean res;
     switch (GST_QUERY_TYPE (query)) {
         case GST_QUERY_CAPS:
             {
-                GstBaseSrcClass *bclass;
+                MyBaseSrcClass *bclass;
                 GstCaps *caps, *filter;
 
-                bclass = GST_BASE_SRC_GET_CLASS (src);
+                bclass = GST_MY_BASE_SRC_GET_CLASS (src);
                 if (bclass->get_caps) {
                     gst_query_parse_caps (query, &filter);
                     if ((caps = bclass->get_caps (src, filter))) {
@@ -230,13 +230,13 @@ tfi_sdi_src_query (GstBaseSrc * src, GstQuery * query)
 }
 
 static GstFlowReturn
-tfi_sdi_src_create (GstBaseSrc * src, guint64 offset, guint size, GstBuffer ** buffer)
+tfi_sdi_src_create (MyBaseSrc * src, guint64 offset, guint size, GstBuffer ** buffer)
 {
-  GstBaseSrcClass *bclass;
+  MyBaseSrcClass *bclass;
   GstFlowReturn ret;
   GstBuffer *res_buf;
 
-  bclass = GST_BASE_SRC_GET_CLASS (src);
+  bclass = GST_MY_BASE_SRC_GET_CLASS (src);
   if (G_UNLIKELY (!bclass->alloc))
     goto no_function;
   if (G_UNLIKELY (!bclass->fill))
@@ -283,7 +283,7 @@ not_ok:
 }
 
 static gboolean
-tfi_sdi_src_do_seek (GstBaseSrc * src, GstSegment * segment)
+tfi_sdi_src_do_seek (MyBaseSrc * src, GstSegment * segment)
 {
   return TRUE;
 }
@@ -291,8 +291,8 @@ tfi_sdi_src_do_seek (GstBaseSrc * src, GstSegment * segment)
 static GstStateChangeReturn
 tfi_sdi_src_change_state (GstElement * element, GstStateChange transition)
 {
-    GstBaseSrc *basesrc;
-    basesrc = GST_BASE_SRC (element);
+    MyBaseSrc *basesrc;
+    basesrc = GST_MY_BASE_SRC (element);
 
     switch (transition) {
         case GST_STATE_CHANGE_NULL_TO_READY:
@@ -316,7 +316,7 @@ tfi_sdi_src_change_state (GstElement * element, GstStateChange transition)
 }
 
 static gboolean
-tfi_sdi_src_set_playing (GstBaseSrc * basesrc, gboolean live_play)
+tfi_sdi_src_set_playing (MyBaseSrc * basesrc, gboolean live_play)
 {
     /* we are now able to grab the LIVE lock, when we get it, we can be
      *    * waiting for PLAYING while blocked in the LIVE cond or we can be waiting
@@ -365,8 +365,8 @@ static void
 gst_base_src_loop (GstPad * pad)
 {
     GstBuffer *buffer = NULL;
-    GstBaseSrc *src;
-    src = GST_BASE_SRC (GST_OBJECT_PARENT (pad));
+    MyBaseSrc *src;
+    src = GST_MY_BASE_SRC (GST_OBJECT_PARENT (pad));
 
     //if (src->priv->stream_start_pending) {
     if (stream_start_pending) {
