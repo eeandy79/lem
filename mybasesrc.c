@@ -213,10 +213,6 @@ static GstStateChangeReturn gst_base_src_change_state (GstElement * element,
     GstStateChange transition);
 
 static void gst_base_src_loop (GstPad * pad);
-static GstFlowReturn gst_base_src_getrange (GstPad * pad, GstObject * parent,
-    guint64 offset, guint length, GstBuffer ** buf);
-static GstFlowReturn gst_base_src_get_range (GstPad * pad, guint64 offset,
-    guint length, GstBuffer ** buf);
 static GstFlowReturn gst_base_src_get_range2 (GstPad * pad, GstBuffer **buf);
 static gboolean gst_base_src_negotiate (GstPad *pad);
 static gboolean gst_base_src_update_length (MyBaseSrc * src, guint64 offset,
@@ -281,7 +277,6 @@ gst_base_src_class_init (MyBaseSrcClass * klass)
   GST_DEBUG_REGISTER_FUNCPTR (gst_base_src_activate_mode);
   GST_DEBUG_REGISTER_FUNCPTR (gst_base_src_event);
   GST_DEBUG_REGISTER_FUNCPTR (gst_base_src_query);
-  GST_DEBUG_REGISTER_FUNCPTR (gst_base_src_getrange);
   GST_DEBUG_REGISTER_FUNCPTR (gst_base_src_fixate);
 }
 
@@ -299,7 +294,6 @@ gst_request_new_pad (GstElement *element, GstPadTemplate *template, const gchar 
     gst_pad_set_activatemode_function (pad, gst_base_src_activate_mode);
     gst_pad_set_event_function (pad, gst_base_src_event);
     gst_pad_set_query_function (pad, gst_base_src_query);
-    gst_pad_set_getrange_function (pad, gst_base_src_getrange);
 
     gst_element_add_pad (GST_ELEMENT (basesrc), pad);
     g_queue_push_tail(&basesrc->pad_queue, pad);
@@ -1904,281 +1898,6 @@ static GstFlowReturn gst_base_src_get_range2 (GstPad * pad, GstBuffer **buf)
     return ret;
 }
 
-/* must be called with LIVE_LOCK */
-static GstFlowReturn
-gst_base_src_get_range (GstPad *pad, guint64 offset, guint length,
-    GstBuffer ** buf)
-{
-    MyBaseSrc *src;
-  GstFlowReturn ret;
-  MyBaseSrcClass *bclass;
-  GstClockReturn status;
-  GstBuffer *res_buf;
-  GstBuffer *in_buf;
-  gboolean own_res_buf;
-
-  src = GST_MY_BASE_SRC (GST_OBJECT_PARENT (pad));
-  bclass = GST_MY_BASE_SRC_GET_CLASS (src);
-
-again:
-  if (src->is_live) {
-    if (G_UNLIKELY (!src->live_running)) {
-      ret = gst_base_src_wait_playing_unlocked (src);
-      if (ret != GST_FLOW_OK)
-        goto stopped;
-    }
-  }
-
-  if (G_UNLIKELY (!GST_MY_BASE_SRC_IS_STARTED (src)
-          && !GST_MY_BASE_SRC_IS_STARTING (src)))
-    goto not_started;
-
-  if (G_UNLIKELY (!bclass->create))
-    goto no_function;
-
-  if (G_UNLIKELY (!gst_base_src_update_length (src, offset, &length, FALSE)))
-    goto unexpected_length;
-
-  /* track position */
-  GST_OBJECT_LOCK (src);
-  if (src->segment.format == GST_FORMAT_BYTES)
-    src->segment.position = offset;
-  GST_OBJECT_UNLOCK (src);
-
-  /* normally we don't count buffers */
-  if (G_UNLIKELY (src->num_buffers_left >= 0)) {
-    if (src->num_buffers_left == 0)
-      goto reached_num_buffers;
-    else
-      src->num_buffers_left--;
-  }
-
-  /* don't enter the create function if a pending EOS event was set. For the
-   * logic of the has_pending_eos, check the event function of this class. */
-  if (G_UNLIKELY (g_atomic_int_get (&src->priv->has_pending_eos))) {
-    src->priv->forced_eos = TRUE;
-    goto eos;
-  }
-
-  GST_DEBUG_OBJECT (src,
-      "calling create offset %" G_GUINT64_FORMAT " length %u, time %"
-      G_GINT64_FORMAT, offset, length, src->segment.time);
-
-  res_buf = in_buf = *buf;
-  own_res_buf = (*buf == NULL);
-
-  GST_LIVE_UNLOCK (src);
-  ret = bclass->create (src, offset, length, &res_buf);
-  GST_LIVE_LOCK (src);
-
-  /* As we released the LIVE_LOCK, the state may have changed */
-  if (src->is_live) {
-    if (G_UNLIKELY (!src->live_running)) {
-      GstFlowReturn wait_ret;
-      wait_ret = gst_base_src_wait_playing_unlocked (src);
-      if (wait_ret != GST_FLOW_OK) {
-        if (ret == GST_FLOW_OK && own_res_buf)
-          gst_buffer_unref (res_buf);
-        ret = wait_ret;
-        goto stopped;
-      }
-    }
-  }
-
-  /* The create function could be unlocked because we have a pending EOS. It's
-   * possible that we have a valid buffer from create that we need to
-   * discard when the create function returned _OK. */
-  if (G_UNLIKELY (g_atomic_int_get (&src->priv->has_pending_eos))) {
-    if (ret == GST_FLOW_OK) {
-      if (own_res_buf)
-        gst_buffer_unref (res_buf);
-    }
-    src->priv->forced_eos = TRUE;
-    goto eos;
-  }
-
-  if (G_UNLIKELY (ret != GST_FLOW_OK))
-    goto not_ok;
-
-  /* fallback in case the create function didn't fill a provided buffer */
-  if (in_buf != NULL && res_buf != in_buf) {
-    GstMapInfo info;
-    gsize copied_size;
-
-    if (!gst_buffer_map (in_buf, &info, GST_MAP_WRITE))
-      goto map_failed;
-
-    copied_size = gst_buffer_extract (res_buf, 0, info.data, info.size);
-
-    gst_buffer_unmap (in_buf, &info);
-    gst_buffer_set_size (in_buf, copied_size);
-
-    gst_buffer_copy_into (in_buf, res_buf, GST_BUFFER_COPY_METADATA, 0, -1);
-
-    gst_buffer_unref (res_buf);
-    res_buf = in_buf;
-  }
-
-  if (res_buf == NULL) {
-    GstBufferList *pending_list = src->priv->pending_bufferlist;
-
-    if (pending_list == NULL || gst_buffer_list_length (pending_list) == 0)
-      goto null_buffer;
-
-    //res_buf = gst_buffer_list_get_writable (pending_list, 0);
-    own_res_buf = FALSE;
-  }
-
-  /* no timestamp set and we are at offset 0, we can timestamp with 0 */
-  if (offset == 0 && src->segment.time == 0
-      && GST_BUFFER_DTS (res_buf) == -1 && !src->is_live) {
-    g_print("\n\nfuck...!!!!!!!!!!!\n\n");
-    g_print("\n\nfuck...!!!!!!!!!!!\n\n");
-    g_print("\n\nfuck...!!!!!!!!!!!\n\n");
-    g_print("\n\nfuck...!!!!!!!!!!!\n\n");
-    g_print("\n\nfuck...!!!!!!!!!!!\n\n");
-    g_print("\n\nfuck...!!!!!!!!!!!\n\n");
-    GST_DEBUG_OBJECT (src, "setting first timestamp to 0");
-    res_buf = gst_buffer_make_writable (res_buf);
-    GST_BUFFER_DTS (res_buf) = 0;
-  }
-
-  /* now sync before pushing the buffer */
-  status = gst_base_src_do_sync (src, res_buf);
-
-  /* waiting for the clock could have made us flushing */
-  if (G_UNLIKELY (src->priv->flushing))
-    goto flushing;
-
-  switch (status) {
-    case GST_CLOCK_EARLY:
-      /* the buffer is too late. We currently don't drop the buffer. */
-      GST_DEBUG_OBJECT (src, "buffer too late!, returning anyway");
-      break;
-    case GST_CLOCK_OK:
-      /* buffer synchronised properly */
-      GST_DEBUG_OBJECT (src, "buffer ok");
-      break;
-    case GST_CLOCK_UNSCHEDULED:
-      /* this case is triggered when we were waiting for the clock and
-       * it got unlocked because we did a state change. In any case, get rid of
-       * the buffer. */
-      if (own_res_buf)
-        gst_buffer_unref (res_buf);
-
-      if (!src->live_running) {
-        /* We return FLUSHING when we are not running to stop the dataflow also
-         * get rid of the produced buffer. */
-        GST_DEBUG_OBJECT (src,
-            "clock was unscheduled (%d), returning FLUSHING", status);
-        ret = GST_FLOW_FLUSHING;
-      } else {
-        /* If we are running when this happens, we quickly switched between
-         * pause and playing. We try to produce a new buffer */
-        GST_DEBUG_OBJECT (src,
-            "clock was unscheduled (%d), but we are running", status);
-        goto again;
-      }
-      break;
-    default:
-      /* all other result values are unexpected and errors */
-      if (own_res_buf)
-        gst_buffer_unref (res_buf);
-      ret = GST_FLOW_ERROR;
-      break;
-  }
-  if (G_LIKELY (ret == GST_FLOW_OK))
-    *buf = res_buf;
-
-  return ret;
-
-  /* ERROR */
-stopped:
-  {
-    GST_DEBUG_OBJECT (src, "wait_playing returned %d (%s)", ret,
-        gst_flow_get_name (ret));
-    return ret;
-  }
-not_ok:
-  {
-    GST_DEBUG_OBJECT (src, "create returned %d (%s)", ret,
-        gst_flow_get_name (ret));
-    return ret;
-  }
-map_failed:
-  {
-    if (own_res_buf)
-      gst_buffer_unref (res_buf);
-    return GST_FLOW_ERROR;
-  }
-not_started:
-  {
-    GST_DEBUG_OBJECT (src, "getrange but not started");
-    return GST_FLOW_FLUSHING;
-  }
-no_function:
-  {
-    GST_DEBUG_OBJECT (src, "no create function");
-    return GST_FLOW_NOT_SUPPORTED;
-  }
-unexpected_length:
-  {
-    GST_DEBUG_OBJECT (src, "unexpected length %u (offset=%" G_GUINT64_FORMAT
-        ", size=%" G_GINT64_FORMAT ")", length, offset, src->segment.duration);
-    return GST_FLOW_EOS;
-  }
-reached_num_buffers:
-  {
-    GST_DEBUG_OBJECT (src, "sent all buffers");
-    return GST_FLOW_EOS;
-  }
-flushing:
-  {
-    GST_DEBUG_OBJECT (src, "we are flushing");
-    if (own_res_buf)
-      gst_buffer_unref (res_buf);
-    return GST_FLOW_FLUSHING;
-  }
-eos:
-  {
-    GST_DEBUG_OBJECT (src, "we are EOS");
-    return GST_FLOW_EOS;
-  }
-null_buffer:
-  {
-    return GST_FLOW_ERROR;
-  }
-}
-
-static GstFlowReturn
-gst_base_src_getrange (GstPad * pad, GstObject * parent, guint64 offset,
-    guint length, GstBuffer ** buf)
-{
-  MyBaseSrc *src;
-  GstFlowReturn res;
-
-  src = GST_MY_BASE_SRC_CAST (parent);
-
-  GST_LIVE_LOCK (src);
-  if (G_UNLIKELY (src->priv->flushing))
-    goto flushing;
-
-  res = gst_base_src_get_range (pad, offset, length, buf);
-
-done:
-  GST_LIVE_UNLOCK (src);
-
-  return res;
-
-  /* ERRORS */
-flushing:
-  {
-    GST_DEBUG_OBJECT (src, "we are flushing");
-    res = GST_FLOW_FLUSHING;
-    goto done;
-  }
-}
-
 static gboolean
 gst_base_src_is_random_access (MyBaseSrc * src)
 {
@@ -2260,7 +1979,6 @@ gst_base_src_loop (GstPad * pad)
         src->priv->pending_bufferlist = NULL;
     }
 
-    //ret = gst_base_src_get_range (pad, position, blocksize, &buf);
     ret = gst_base_src_get_range2 (pad, &buf);
     if (G_UNLIKELY (ret != GST_FLOW_OK)) {
         GST_INFO_OBJECT (src, "pausing after gst_base_src_get_range() = %s",

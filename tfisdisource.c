@@ -192,10 +192,15 @@ tfi_sdi_src_query (MyBaseSrc * src, GstQuery * query)
 
 static GstFlowReturn create2 (GstPad *pad, GstBuffer ** buffer)
 {
+    char* pad_name = gst_pad_get_name(pad);
+    GstFlowReturn ret;
     int blocksize = ((int)pad) & 0x0000ffff;
     MyBaseSrc *src = GST_MY_BASE_SRC (GST_OBJECT_PARENT (pad));
     MyBaseSrcClass *bclass = GST_MY_BASE_SRC_GET_CLASS (src);
-    return bclass->create(src, 0, blocksize, buffer);
+    ret = bclass->create(src, 0, blocksize, buffer);
+    GST_BUFFER_PTS (*buffer) = 10;
+    GST_BUFFER_DTS (*buffer) = 11;
+    return ret;
 }
 
 static gboolean
