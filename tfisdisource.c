@@ -5,6 +5,7 @@
 #include "gstmyfilter.h"
 #include <string.h>
 #include <stdlib.h>
+#include <unistd.h>
 
 GST_DEBUG_CATEGORY_STATIC (tfi_sdi_src_debug);
 #define GST_CAT_DEFAULT tfi_sdi_src_debug
@@ -24,8 +25,8 @@ static gboolean tfi_sdi_src_start (MyBaseSrc *basesrc);
 static gboolean tfi_sdi_src_stop (MyBaseSrc *basesrc);
 static gboolean tfi_sdi_src_query (MyBaseSrc * src, GstQuery * query);
 static GstFlowReturn tfi_sdi_src_alloc (MyBaseSrc * src, guint64 offset, guint size, GstBuffer ** buffer);
-static GstFlowReturn tfi_sdi_src_create (MyBaseSrc * src, guint64 offset, guint size, GstBuffer ** buffer);
-static gboolean tfi_sdi_src_do_seek (MyBaseSrc * src, GstSegment * segment);
+
+static GstFlowReturn create2 (GstPad *pad, GstBuffer ** buffer);
 
 static void
 tfi_sdi_src_class_init (TfiSdiSrcClass * klass)
@@ -48,9 +49,9 @@ tfi_sdi_src_class_init (TfiSdiSrcClass * klass)
     gstbasesrc_class->get_caps = NULL;
     gstbasesrc_class->negotiate = NULL;
     gstbasesrc_class->event = NULL;
-    gstbasesrc_class->create = tfi_sdi_src_create; // new test
     gstbasesrc_class->alloc = tfi_sdi_src_alloc; // new test
     gstbasesrc_class->decide_allocation = NULL;
+    gstbasesrc_class->create2 = create2;
 
     gstbasesrc_class->fixate = tfi_sdi_src_src_fixate;
     gstbasesrc_class->get_times = tfi_sdi_src_get_times;
@@ -189,65 +190,13 @@ tfi_sdi_src_query (MyBaseSrc * src, GstQuery * query)
     return res;
 }
 
-static GstFlowReturn
-tfi_sdi_src_create (MyBaseSrc * src, guint64 offset, guint size, GstBuffer ** buffer)
+static GstFlowReturn create2 (GstPad *pad, GstBuffer ** buffer)
 {
-  MyBaseSrcClass *bclass;
-  GstFlowReturn ret;
-  GstBuffer *res_buf;
-
-  bclass = GST_MY_BASE_SRC_GET_CLASS (src);
-  if (G_UNLIKELY (!bclass->alloc))
-    goto no_function;
-  if (G_UNLIKELY (!bclass->fill))
-    goto no_function;
-
-  if (*buffer == NULL) {
-    ret = bclass->alloc (src, offset, size, &res_buf);
-    if (G_UNLIKELY (ret != GST_FLOW_OK))
-      goto alloc_failed;
-  } else {
-    res_buf = *buffer;
-  }
-
-  if (G_LIKELY (size > 0)) {
-    /* only call fill when there is a size */
-    ret = bclass->fill (src, offset, size, res_buf);
-    if (G_UNLIKELY (ret != GST_FLOW_OK))
-      goto not_ok;
-  }
-
-  *buffer = res_buf;
-
-  return GST_FLOW_OK;
-
-  /* ERRORS */
-no_function:
-  {
-    GST_DEBUG_OBJECT (src, "no fill or alloc function");
-    return GST_FLOW_NOT_SUPPORTED;
-  }
-alloc_failed:
-  {
-    GST_DEBUG_OBJECT (src, "Failed to allocate buffer of %u bytes", size);
-    return ret;
-  }
-not_ok:
-  {
-    GST_DEBUG_OBJECT (src, "fill returned %d (%s)", ret,
-        gst_flow_get_name (ret));
-    if (*buffer == NULL)
-      gst_buffer_unref (res_buf);
-    return ret;
-  }
+    int blocksize = ((int)pad) & 0x0000ffff;
+    MyBaseSrc *src = GST_MY_BASE_SRC (GST_OBJECT_PARENT (pad));
+    MyBaseSrcClass *bclass = GST_MY_BASE_SRC_GET_CLASS (src);
+    return bclass->create(src, 0, blocksize, buffer);
 }
-
-static gboolean
-tfi_sdi_src_do_seek (MyBaseSrc * src, GstSegment * segment)
-{
-  return TRUE;
-}
-
 
 static gboolean
 plugin_init (GstPlugin *plugin)

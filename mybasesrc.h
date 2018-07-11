@@ -205,6 +205,8 @@ struct _MyBaseSrcClass {
   void          (*get_times)    (MyBaseSrc *src, GstBuffer *buffer,
                                  GstClockTime *start, GstClockTime *end);
 
+  void          (*ready)        (MyBaseSrc *src);
+
   /* get the total size of the resource in the format set by
    * gst_base_src_set_format() */
   gboolean      (*get_size)     (MyBaseSrc *src, guint64 *size);
@@ -230,6 +232,8 @@ struct _MyBaseSrcClass {
    */
   GstFlowReturn (*create)       (MyBaseSrc *src, guint64 offset, guint size,
                                  GstBuffer **buf);
+  GstFlowReturn (*create2)      (GstPad * pad, GstBuffer **buf);
+
   /* ask the subclass to allocate an output buffer. The default implementation
    * will use the negotiated allocator. */
   GstFlowReturn (*alloc)        (MyBaseSrc *src, guint64 offset, guint size,
@@ -308,6 +312,7 @@ void            gst_base_src_get_allocator    (MyBaseSrc *src,
 GST_BASE_API
 void            gst_base_src_submit_buffer_list (MyBaseSrc    * src,
                                                  GstBufferList * buffer_list);
+
 
 #ifdef G_DEFINE_AUTOPTR_CLEANUP_FUNC
 G_DEFINE_AUTOPTR_CLEANUP_FUNC(MyBaseSrc, gst_object_unref)

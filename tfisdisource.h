@@ -13,13 +13,13 @@ typedef struct _TfiSdiSrc TfiSdiSrc;
 typedef struct _TfiSdiSrcClass TfiSdiSrcClass;
 
 struct _TfiSdiSrc {
-  //GstBaseSrc element;
-  MyBaseSrc element;
+    MyBaseSrc element;
+    GThread *datathread;
+    gboolean running;
 };
 
 struct _TfiSdiSrcClass {
-  //GstBaseSrcClass parent_class;
-  MyBaseSrcClass parent_class;
+    MyBaseSrcClass parent_class;
 };
 
 GType tfi_sdi_src_get_type (void);

@@ -173,8 +173,7 @@ gst_base_src_get_instance_private (MyBaseSrc * self)
   return (G_STRUCT_MEMBER_P (self, private_offset));
 }
 
-static GstCaps *gst_base_src_default_get_caps (MyBaseSrc * bsrc,
-    GstCaps * filter);
+static GstCaps *gst_base_src_default_get_caps (MyBaseSrc * bsrc, GstCaps * filter);
 static GstCaps *gst_base_src_default_fixate (MyBaseSrc * src, GstCaps * caps);
 static GstCaps *gst_base_src_fixate (MyBaseSrc * src, GstCaps * caps);
 
@@ -218,9 +217,11 @@ static GstFlowReturn gst_base_src_getrange (GstPad * pad, GstObject * parent,
     guint64 offset, guint length, GstBuffer ** buf);
 static GstFlowReturn gst_base_src_get_range (GstPad * pad, guint64 offset,
     guint length, GstBuffer ** buf);
+static GstFlowReturn gst_base_src_get_range2 (GstPad * pad, GstBuffer **buf);
 static gboolean gst_base_src_negotiate (GstPad *pad);
 static gboolean gst_base_src_update_length (MyBaseSrc * src, guint64 offset,
     guint * length, gboolean force);
+
 
 static void
 gst_base_src_class_init (MyBaseSrcClass * klass)
@@ -274,8 +275,7 @@ gst_base_src_class_init (MyBaseSrcClass * klass)
   klass->event = GST_DEBUG_FUNCPTR (gst_base_src_default_event);
   klass->create = GST_DEBUG_FUNCPTR (gst_base_src_default_create);
   klass->alloc = GST_DEBUG_FUNCPTR (gst_base_src_default_alloc);
-  klass->decide_allocation =
-      GST_DEBUG_FUNCPTR (gst_base_src_decide_allocation_default);
+  klass->decide_allocation = GST_DEBUG_FUNCPTR (gst_base_src_decide_allocation_default);
 
   /* Registering debug symbols for function pointers */
   GST_DEBUG_REGISTER_FUNCPTR (gst_base_src_activate_mode);
@@ -1463,13 +1463,12 @@ gst_base_src_send_event (GstElement * element, GstEvent * event)
 }
 
 static void
-gst_base_src_update_qos (MyBaseSrc * src,
-    gdouble proportion, GstClockTimeDiff diff, GstClockTime timestamp)
+gst_base_src_update_qos (MyBaseSrc * src, gdouble proportion, GstClockTimeDiff diff, GstClockTime timestamp)
 {
     GST_OBJECT_LOCK (src);
-  src->priv->proportion = proportion;
-  src->priv->earliest_time = timestamp + diff;
-  GST_OBJECT_UNLOCK (src);
+    src->priv->proportion = proportion;
+    src->priv->earliest_time = timestamp + diff;
+    GST_OBJECT_UNLOCK (src);
 }
 
 
@@ -1516,10 +1515,8 @@ gst_base_src_default_event (MyBaseSrc * src, GstEvent * event)
 
     /* ERRORS */
 not_seekable:
-    {
-        GST_DEBUG_OBJECT (src, "is not seekable");
-        return FALSE;
-    }
+    GST_DEBUG_OBJECT (src, "is not seekable");
+    return FALSE;
 }
 
 static gboolean
@@ -1896,6 +1893,17 @@ unexpected_length:
   }
 }
 
+static GstFlowReturn gst_base_src_get_range2 (GstPad * pad, GstBuffer **buf)
+{
+    MyBaseSrc *src;
+    MyBaseSrcClass *bclass;
+    GstFlowReturn ret;
+    src = GST_MY_BASE_SRC (GST_OBJECT_PARENT (pad));
+    bclass = GST_MY_BASE_SRC_GET_CLASS (src);
+    ret = bclass->create2 (pad, buf);
+    return ret;
+}
+
 /* must be called with LIVE_LOCK */
 static GstFlowReturn
 gst_base_src_get_range (GstPad *pad, guint64 offset, guint length,
@@ -2198,335 +2206,279 @@ start_failed:
 static void
 gst_base_src_loop (GstPad * pad)
 {
-  MyBaseSrc *src;
-  GstBuffer *buf = NULL;
-  GstFlowReturn ret;
-  gint64 position;
-  gboolean eos;
-  guint blocksize;
-  GList *pending_events = NULL, *tmp;
+    GstFlowReturn ret;
+    MyBaseSrc *src = GST_MY_BASE_SRC (GST_OBJECT_PARENT (pad));
+    GstBuffer *buf = NULL;
+    gint64 position = -1;
+    gboolean eos = FALSE;
+    GList *pending_events = NULL, *tmp;
 
-  eos = FALSE;
 
-  src = GST_MY_BASE_SRC (GST_OBJECT_PARENT (pad));
-
-  /* Just leave immediately if we're flushing */
-  GST_LIVE_LOCK (src);
-  if (G_UNLIKELY (src->priv->flushing || GST_PAD_IS_FLUSHING (pad)))
-    goto flushing;
-  GST_LIVE_UNLOCK (src);
-
-  /* Just return if EOS is pushed again, as the app might be unaware that an
-   * EOS have been sent already */
-  if (GST_PAD_IS_EOS (pad)) {
-    GST_DEBUG_OBJECT (src, "Pad is marked as EOS, pause the task");
-    gst_pad_pause_task (pad);
-    goto done;
-  }
-
-  gst_base_src_send_stream_start (src);
-
-  /* The stream-start event could've caused something to flush us */
-  GST_LIVE_LOCK (src);
-  if (G_UNLIKELY (src->priv->flushing || GST_PAD_IS_FLUSHING (pad)))
-    goto flushing;
-  GST_LIVE_UNLOCK (src);
-
-  /* check if we need to renegotiate */
-  if (gst_pad_check_reconfigure (pad)) {
-    if (!gst_base_src_negotiate (pad)) {
-      gst_pad_mark_reconfigure (pad);
-      if (GST_PAD_IS_FLUSHING (pad)) {
-        GST_LIVE_LOCK (src);
+    /* Just leave immediately if we're flushing */
+    GST_LIVE_LOCK (src);
+    if (G_UNLIKELY (src->priv->flushing || GST_PAD_IS_FLUSHING (pad)))
         goto flushing;
-      } else {
-        goto negotiate_failed;
-      }
-    }
-  }
-
-  GST_LIVE_LOCK (src);
-
-  if (G_UNLIKELY (src->priv->flushing || GST_PAD_IS_FLUSHING (pad)))
-    goto flushing;
-
-  //blocksize = src->blocksize;
-  blocksize = ((int)pad) & 0x0000ffff;
-
-  switch (src->segment.format) {
-      case GST_FORMAT_UNDEFINED:
-          g_print("GST_FORMAT_UNDEFINED\n");
-          break;
-      case GST_FORMAT_DEFAULT:
-          g_print("GST_FORMAT_UNDEFINED\n");
-          break;
-      case GST_FORMAT_BYTES:
-          g_print("GST_FORMAT_BYTES\n");
-          break;
-      case GST_FORMAT_TIME:
-          g_print("GST_FORMAT_TIME\n");
-          break;
-      case GST_FORMAT_BUFFERS:
-          g_print("GST_FORMAT_BUFFERS\n");
-          break;
-      case GST_FORMAT_PERCENT:
-          g_print("GST_FORMAT_PERCENT\n");
-  }
-
-    //exit(0);
-
-
-
-  /* if we operate in bytes, we can calculate an offset */
-  if (src->segment.format == GST_FORMAT_BYTES) {
-    position = src->segment.position;
-    /* for negative rates, start with subtracting the blocksize */
-    if (src->segment.rate < 0.0) {
-      /* we cannot go below segment.start */
-      if (position > src->segment.start + blocksize)
-        position -= blocksize;
-      else {
-        /* last block, remainder up to segment.start */
-        blocksize = position - src->segment.start;
-        position = src->segment.start;
-      }
-    }
-  } else
-    position = -1;
-
-  GST_LOG_OBJECT (src, "next_ts %" GST_TIME_FORMAT " size %u",
-      GST_TIME_ARGS (position), blocksize);
-
-  /* clean up just in case we got interrupted or so last time round */
-  if (src->priv->pending_bufferlist != NULL) {
-    gst_buffer_list_unref (src->priv->pending_bufferlist);
-    src->priv->pending_bufferlist = NULL;
-  }
-
-  ret = gst_base_src_get_range (pad, position, blocksize, &buf);
-  if (G_UNLIKELY (ret != GST_FLOW_OK)) {
-    GST_INFO_OBJECT (src, "pausing after gst_base_src_get_range() = %s",
-        gst_flow_get_name (ret));
     GST_LIVE_UNLOCK (src);
-    goto pause;
-  }
 
-  /* Note: at this point buf might be a single buf returned which we own or
-   * the first buf of a pending buffer list submitted via submit_buffer_list(),
-   * in which case the buffer is owned by the pending buffer list and not us. */
-  g_assert (buf != NULL);
-
-  /* push events to close/start our segment before we push the buffer. */
-  if (G_UNLIKELY (src->priv->segment_pending)) {
-    GstEvent *seg_event = gst_event_new_segment (&src->segment);
-
-    gst_event_set_seqnum (seg_event, src->priv->segment_seqnum);
-    src->priv->segment_seqnum = gst_util_seqnum_next ();
-    gst_pad_push_event (pad, seg_event);
-    src->priv->segment_pending = FALSE;
-  }
-
-  if (g_atomic_int_get (&src->priv->have_events)) {
-    GST_OBJECT_LOCK (src);
-    /* take the events */
-    pending_events = src->priv->pending_events;
-    src->priv->pending_events = NULL;
-    g_atomic_int_set (&src->priv->have_events, FALSE);
-    GST_OBJECT_UNLOCK (src);
-  }
-
-  /* Push out pending events if any */
-  if (G_UNLIKELY (pending_events != NULL)) {
-    for (tmp = pending_events; tmp; tmp = g_list_next (tmp)) {
-      GstEvent *ev = (GstEvent *) tmp->data;
-      gst_pad_push_event (pad, ev);
+    /* Just return if EOS is pushed again, as the app might be unaware that an
+     * EOS have been sent already */
+    if (GST_PAD_IS_EOS (pad)) {
+        GST_DEBUG_OBJECT (src, "Pad is marked as EOS, pause the task");
+        gst_pad_pause_task (pad);
+        goto done;
     }
-    g_list_free (pending_events);
-  }
 
-  /* figure out the new position */
-  switch (src->segment.format) {
-    case GST_FORMAT_BYTES:
-    {
-      guint bufsize = gst_buffer_get_size (buf);
+    gst_base_src_send_stream_start (src);
 
-      /* we subtracted above for negative rates */
-      if (src->segment.rate >= 0.0)
-        position += bufsize;
-      break;
-    }
-    case GST_FORMAT_TIME:
-    {
-      GstClockTime start, duration;
+    /* The stream-start event could've caused something to flush us */
+    GST_LIVE_LOCK (src);
+    if (G_UNLIKELY (src->priv->flushing || GST_PAD_IS_FLUSHING (pad)))
+        goto flushing;
+    GST_LIVE_UNLOCK (src);
 
-      start = GST_BUFFER_TIMESTAMP (buf);
-      duration = GST_BUFFER_DURATION (buf);
-
-      if (GST_CLOCK_TIME_IS_VALID (start))
-        position = start;
-      else
-        position = src->segment.position;
-
-      if (GST_CLOCK_TIME_IS_VALID (duration)) {
-        if (src->segment.rate >= 0.0)
-          position += duration;
-        else if (position > duration)
-          position -= duration;
-        else
-          position = 0;
-      }
-      break;
-    }
-    case GST_FORMAT_DEFAULT:
-      if (src->segment.rate >= 0.0)
-        position = GST_BUFFER_OFFSET_END (buf);
-      else
-        position = GST_BUFFER_OFFSET (buf);
-      break;
-    default:
-      position = -1;
-      break;
-  }
-  if (position != -1) {
-    if (src->segment.rate >= 0.0) {
-      /* positive rate, check if we reached the stop */
-      if (src->segment.stop != -1) {
-        if (position >= src->segment.stop) {
-          eos = TRUE;
-          position = src->segment.stop;
+    /* check if we need to renegotiate */
+    if (gst_pad_check_reconfigure (pad)) {
+        if (!gst_base_src_negotiate (pad)) {
+            gst_pad_mark_reconfigure (pad);
+            if (GST_PAD_IS_FLUSHING (pad)) {
+                GST_LIVE_LOCK (src);
+                goto flushing;
+            } else {
+                goto negotiate_failed;
+            }
         }
-      }
+    }
+
+    GST_LIVE_LOCK (src);
+
+    if (G_UNLIKELY (src->priv->flushing || GST_PAD_IS_FLUSHING (pad)))
+        goto flushing;
+
+    /* clean up just in case we got interrupted or so last time round */
+    if (src->priv->pending_bufferlist != NULL) {
+        gst_buffer_list_unref (src->priv->pending_bufferlist);
+        src->priv->pending_bufferlist = NULL;
+    }
+
+    //ret = gst_base_src_get_range (pad, position, blocksize, &buf);
+    ret = gst_base_src_get_range2 (pad, &buf);
+    if (G_UNLIKELY (ret != GST_FLOW_OK)) {
+        GST_INFO_OBJECT (src, "pausing after gst_base_src_get_range() = %s",
+                gst_flow_get_name (ret));
+        GST_LIVE_UNLOCK (src);
+        goto pause;
+    }
+
+    /* Note: at this point buf might be a single buf returned which we own or
+     * the first buf of a pending buffer list submitted via submit_buffer_list(),
+     * in which case the buffer is owned by the pending buffer list and not us. */
+    g_assert (buf != NULL);
+
+    /* push events to close/start our segment before we push the buffer. */
+    if (G_UNLIKELY (src->priv->segment_pending)) {
+        GstEvent *seg_event = gst_event_new_segment (&src->segment);
+
+        gst_event_set_seqnum (seg_event, src->priv->segment_seqnum);
+        src->priv->segment_seqnum = gst_util_seqnum_next ();
+        gst_pad_push_event (pad, seg_event);
+        src->priv->segment_pending = FALSE;
+    }
+
+    if (g_atomic_int_get (&src->priv->have_events)) {
+        GST_OBJECT_LOCK (src);
+        /* take the events */
+        pending_events = src->priv->pending_events;
+        src->priv->pending_events = NULL;
+        g_atomic_int_set (&src->priv->have_events, FALSE);
+        GST_OBJECT_UNLOCK (src);
+    }
+
+    /* Push out pending events if any */
+    if (G_UNLIKELY (pending_events != NULL)) {
+        for (tmp = pending_events; tmp; tmp = g_list_next (tmp)) {
+            GstEvent *ev = (GstEvent *) tmp->data;
+            gst_pad_push_event (pad, ev);
+        }
+        g_list_free (pending_events);
+    }
+
+    /* figure out the new position */
+    switch (src->segment.format) {
+        case GST_FORMAT_BYTES: // we don't support bytes now
+            break;
+        case GST_FORMAT_TIME:
+            {
+
+                GstClockTime start, duration;
+                start = GST_BUFFER_TIMESTAMP (buf);
+                duration = GST_BUFFER_DURATION (buf);
+
+                if (GST_CLOCK_TIME_IS_VALID (start))
+                    position = start;
+                else
+                    position = src->segment.position;
+
+                if (GST_CLOCK_TIME_IS_VALID (duration)) {
+                    if (src->segment.rate >= 0.0)
+                        position += duration;
+                    else if (position > duration)
+                        position -= duration;
+                    else
+                        position = 0;
+                }
+                break;
+            }
+        case GST_FORMAT_DEFAULT:
+            if (src->segment.rate >= 0.0)
+                position = GST_BUFFER_OFFSET_END (buf);
+            else
+                position = GST_BUFFER_OFFSET (buf);
+            break;
+        default:
+            position = -1;
+            break;
+    }
+
+    if (position != -1) {
+        if (src->segment.rate >= 0.0) {
+            /* positive rate, check if we reached the stop */
+            if (src->segment.stop != -1) {
+                if (position >= src->segment.stop) {
+                    eos = TRUE;
+                    position = src->segment.stop;
+                }
+            }
+        } else {
+            /* negative rate, check if we reached the start. start is always set to
+             * something different from -1 */
+            if (position <= src->segment.start) {
+                eos = TRUE;
+                position = src->segment.start;
+            }
+            /* when going reverse, all buffers are DISCONT */
+            src->priv->discont = TRUE;
+        }
+        GST_OBJECT_LOCK (src);
+        src->segment.position = position;
+        GST_OBJECT_UNLOCK (src);
+    }
+
+    if (G_UNLIKELY (src->priv->discont)) {
+        GST_INFO_OBJECT (src, "marking pending DISCONT");
+        buf = gst_buffer_make_writable (buf);
+        GST_BUFFER_FLAG_SET (buf, GST_BUFFER_FLAG_DISCONT);
+        src->priv->discont = FALSE;
+    }
+    GST_LIVE_UNLOCK (src);
+
+    /* push buffer or buffer list */
+    if (src->priv->pending_bufferlist != NULL) {
+        ret = gst_pad_push_list (pad, src->priv->pending_bufferlist);
+        src->priv->pending_bufferlist = NULL;
     } else {
-      /* negative rate, check if we reached the start. start is always set to
-       * something different from -1 */
-      if (position <= src->segment.start) {
-        eos = TRUE;
-        position = src->segment.start;
-      }
-      /* when going reverse, all buffers are DISCONT */
-      src->priv->discont = TRUE;
+        ret = gst_pad_push (pad, buf);
     }
-    GST_OBJECT_LOCK (src);
-    src->segment.position = position;
-    GST_OBJECT_UNLOCK (src);
-  }
 
-  if (G_UNLIKELY (src->priv->discont)) {
-    GST_INFO_OBJECT (src, "marking pending DISCONT");
-    buf = gst_buffer_make_writable (buf);
-    GST_BUFFER_FLAG_SET (buf, GST_BUFFER_FLAG_DISCONT);
-    src->priv->discont = FALSE;
-  }
-  GST_LIVE_UNLOCK (src);
-
-  /* push buffer or buffer list */
-  if (src->priv->pending_bufferlist != NULL) {
-    ret = gst_pad_push_list (pad, src->priv->pending_bufferlist);
-    src->priv->pending_bufferlist = NULL;
-  } else {
-    ret = gst_pad_push (pad, buf);
-  }
-
-  if (G_UNLIKELY (ret != GST_FLOW_OK)) {
-    if (ret == GST_FLOW_NOT_NEGOTIATED) {
-      goto not_negotiated;
+    if (G_UNLIKELY (ret != GST_FLOW_OK)) {
+        if (ret == GST_FLOW_NOT_NEGOTIATED) {
+            goto not_negotiated;
+        }
+        GST_INFO_OBJECT (src, "pausing after gst_pad_push() = %s",
+                gst_flow_get_name (ret));
+        goto pause;
     }
-    GST_INFO_OBJECT (src, "pausing after gst_pad_push() = %s",
-        gst_flow_get_name (ret));
-    goto pause;
-  }
 
-  /* Segment pending means that a new segment was configured
-   * during this loop run */
-  if (G_UNLIKELY (eos && !src->priv->segment_pending)) {
-    GST_INFO_OBJECT (src, "pausing after end of segment");
-    ret = GST_FLOW_EOS;
-    goto pause;
-  }
+    /* Segment pending means that a new segment was configured
+     * during this loop run */
+    if (G_UNLIKELY (eos && !src->priv->segment_pending)) {
+        GST_INFO_OBJECT (src, "pausing after end of segment");
+        ret = GST_FLOW_EOS;
+        goto pause;
+    }
 
 done:
-  return;
+    return;
 
-  /* special cases */
+    /* special cases */
 not_negotiated:
-  {
-    if (gst_pad_needs_reconfigure (pad)) {
-      GST_DEBUG_OBJECT (src, "Retrying to renegotiate");
-      return;
+    {
+        if (gst_pad_needs_reconfigure (pad)) {
+            GST_DEBUG_OBJECT (src, "Retrying to renegotiate");
+            return;
+        }
+        /* fallthrough when push returns NOT_NEGOTIATED and we don't have
+         * a pending negotiation request on our srcpad */
     }
-    /* fallthrough when push returns NOT_NEGOTIATED and we don't have
-     * a pending negotiation request on our srcpad */
-  }
 negotiate_failed:
-  {
-    GST_DEBUG_OBJECT (src, "Not negotiated");
-    ret = GST_FLOW_NOT_NEGOTIATED;
-    goto pause;
-  }
-flushing:
-  {
-    GST_DEBUG_OBJECT (src, "we are flushing");
-    GST_LIVE_UNLOCK (src);
-    ret = GST_FLOW_FLUSHING;
-    goto pause;
-  }
-pause:
-  {
-    const gchar *reason = gst_flow_get_name (ret);
-    GstEvent *event;
-
-    GST_DEBUG_OBJECT (src, "pausing task, reason %s", reason);
-    src->running = FALSE;
-    gst_pad_pause_task (pad);
-    if (ret == GST_FLOW_EOS) {
-      gboolean flag_segment;
-      GstFormat format;
-      gint64 position;
-
-      flag_segment = (src->segment.flags & GST_SEGMENT_FLAG_SEGMENT) != 0;
-      format = src->segment.format;
-      position = src->segment.position;
-
-      /* perform EOS logic */
-      if (src->priv->forced_eos) {
-        g_assert (g_atomic_int_get (&src->priv->has_pending_eos));
-        GST_OBJECT_LOCK (src);
-        event = src->priv->pending_eos;
-        src->priv->pending_eos = NULL;
-        GST_OBJECT_UNLOCK (src);
-
-      } else if (flag_segment) {
-        GstMessage *message;
-
-        message = gst_message_new_segment_done (GST_OBJECT_CAST (src),
-            format, position);
-        gst_message_set_seqnum (message, src->priv->seqnum);
-        gst_element_post_message (GST_ELEMENT_CAST (src), message);
-        event = gst_event_new_segment_done (format, position);
-        gst_event_set_seqnum (event, src->priv->seqnum);
-
-      } else {
-        event = gst_event_new_eos ();
-        gst_event_set_seqnum (event, src->priv->seqnum);
-      }
-
-      gst_pad_push_event (pad, event);
-      src->priv->forced_eos = FALSE;
-
-    } else if (ret == GST_FLOW_NOT_LINKED || ret <= GST_FLOW_EOS) {
-      event = gst_event_new_eos ();
-      gst_event_set_seqnum (event, src->priv->seqnum);
-      /* for fatal errors we post an error message, post the error
-       * first so the app knows about the error first.
-       * Also don't do this for FLUSHING because it happens
-       * due to flushing and posting an error message because of
-       * that is the wrong thing to do, e.g. when we're doing
-       * a flushing seek. */
-      GST_ELEMENT_FLOW_ERROR (src, ret);
-      gst_pad_push_event (pad, event);
+    {
+        GST_DEBUG_OBJECT (src, "Not negotiated");
+        ret = GST_FLOW_NOT_NEGOTIATED;
+        goto pause;
     }
-    goto done;
-  }
+flushing:
+    {
+        GST_DEBUG_OBJECT (src, "we are flushing");
+        GST_LIVE_UNLOCK (src);
+        ret = GST_FLOW_FLUSHING;
+        goto pause;
+    }
+pause:
+    {
+        const gchar *reason = gst_flow_get_name (ret);
+        GstEvent *event;
+
+        GST_DEBUG_OBJECT (src, "pausing task, reason %s", reason);
+        src->running = FALSE;
+        gst_pad_pause_task (pad);
+        if (ret == GST_FLOW_EOS) {
+            gboolean flag_segment;
+            GstFormat format;
+            gint64 position;
+
+            flag_segment = (src->segment.flags & GST_SEGMENT_FLAG_SEGMENT) != 0;
+            format = src->segment.format;
+            position = src->segment.position;
+
+            /* perform EOS logic */
+            if (src->priv->forced_eos) {
+                g_assert (g_atomic_int_get (&src->priv->has_pending_eos));
+                GST_OBJECT_LOCK (src);
+                event = src->priv->pending_eos;
+                src->priv->pending_eos = NULL;
+                GST_OBJECT_UNLOCK (src);
+
+            } else if (flag_segment) {
+                GstMessage *message;
+
+                message = gst_message_new_segment_done (GST_OBJECT_CAST (src),
+                        format, position);
+                gst_message_set_seqnum (message, src->priv->seqnum);
+                gst_element_post_message (GST_ELEMENT_CAST (src), message);
+                event = gst_event_new_segment_done (format, position);
+                gst_event_set_seqnum (event, src->priv->seqnum);
+
+            } else {
+                event = gst_event_new_eos ();
+                gst_event_set_seqnum (event, src->priv->seqnum);
+            }
+
+            gst_pad_push_event (pad, event);
+            src->priv->forced_eos = FALSE;
+
+        } else if (ret == GST_FLOW_NOT_LINKED || ret <= GST_FLOW_EOS) {
+            event = gst_event_new_eos ();
+            gst_event_set_seqnum (event, src->priv->seqnum);
+            /* for fatal errors we post an error message, post the error
+             * first so the app knows about the error first.
+             * Also don't do this for FLUSHING because it happens
+             * due to flushing and posting an error message because of
+             * that is the wrong thing to do, e.g. when we're doing
+             * a flushing seek. */
+            GST_ELEMENT_FLOW_ERROR (src, ret);
+            gst_pad_push_event (pad, event);
+        }
+        goto done;
+    }
 }
 
 static gboolean
@@ -2712,8 +2664,7 @@ gst_base_src_prepare_allocation (GstPad *pad, GstCaps *caps)
     g_assert (bclass->decide_allocation != NULL);
     result = bclass->decide_allocation (basesrc, query);
 
-    GST_DEBUG_OBJECT (basesrc, "ALLOCATION (%d) params: %" GST_PTR_FORMAT, result,
-            query);
+    GST_DEBUG_OBJECT (basesrc, "ALLOCATION (%d) params: %" GST_PTR_FORMAT, result, query);
 
     if (!result)
         goto no_decide_allocation;
@@ -2838,22 +2789,17 @@ gst_base_src_negotiate (GstPad *pad)
     basesrc = GST_MY_BASE_SRC (GST_OBJECT_PARENT (pad));
     bclass = GST_MY_BASE_SRC_GET_CLASS (basesrc);
 
-    GST_DEBUG_OBJECT (basesrc, "starting negotiation");
-
     if (G_LIKELY (bclass->negotiate))
         result = bclass->negotiate (basesrc);
     else
         result = TRUE;
 
     if (G_LIKELY (result)) {
-        GstCaps *caps;
-
-        caps = gst_pad_get_current_caps (pad);
-
+        GstCaps *caps = gst_pad_get_current_caps (pad);
         result = gst_base_src_prepare_allocation (pad, caps);
-
-        if (caps)
+        if (caps) {
             gst_caps_unref (caps);
+        }
     }
     return result;
 }
@@ -2893,7 +2839,6 @@ gst_base_src_start (MyBaseSrc * basesrc)
   if (!result)
     goto could_not_start;
 
-  g_print("here\n");
   if (!gst_base_src_is_async (basesrc)) {
     gst_base_src_start_complete (basesrc, GST_FLOW_OK);
     /* not really waiting here, we call this to get the result
@@ -3150,53 +3095,43 @@ gst_base_src_set_flushing (MyBaseSrc * basesrc, gboolean flushing)
 static gboolean
 gst_base_src_set_playing (MyBaseSrc * basesrc, gboolean live_play)
 {
-  /* we are now able to grab the LIVE lock, when we get it, we can be
-   * waiting for PLAYING while blocked in the LIVE cond or we can be waiting
-   * for the clock. */
-  GST_LIVE_LOCK (basesrc);
-  GST_DEBUG_OBJECT (basesrc, "unschedule clock");
+    /* we are now able to grab the LIVE lock, when we get it, we can be
+     * waiting for PLAYING while blocked in the LIVE cond or we can be waiting
+     * for the clock. */
+    GST_LIVE_LOCK (basesrc);
+    GST_DEBUG_OBJECT (basesrc, "unschedule clock");
 
-  /* unblock clock sync (if any) */
-  if (basesrc->clock_id)
-    gst_clock_id_unschedule (basesrc->clock_id);
+    /* unblock clock sync (if any) */
+    if (basesrc->clock_id)
+        gst_clock_id_unschedule (basesrc->clock_id);
 
-  /* configure what to do when we get to the LIVE lock. */
-  GST_DEBUG_OBJECT (basesrc, "live running %d", live_play);
-  basesrc->live_running = live_play;
+    /* configure what to do when we get to the LIVE lock. */
+    GST_DEBUG_OBJECT (basesrc, "live running %d", live_play);
+    basesrc->live_running = live_play;
 
-  if (live_play) {
-    gint i;
+    if (live_play) {
+        gint i;
 
-    /* for live sources we restart the timestamp correction */
-    GST_OBJECT_LOCK (basesrc);
-    basesrc->priv->latency = -1;
-    GST_OBJECT_UNLOCK (basesrc);
-    /* have to restart the task in case it stopped because of the unlock when
-     * we went to PAUSED. Only do this if we operating in push mode. */
-    gint length = g_queue_get_length(&basesrc->pad_queue);
-    for (i = 0; i < length; i++) {
-        GstPad *tmpPad = g_queue_peek_nth (&basesrc->pad_queue, i);
-        gst_pad_start_task (tmpPad, (GstTaskFunction) gst_base_src_loop, tmpPad, NULL);
+        /* for live sources we restart the timestamp correction */
+        GST_OBJECT_LOCK (basesrc);
+        basesrc->priv->latency = -1;
+        GST_OBJECT_UNLOCK (basesrc);
+        /* have to restart the task in case it stopped because of the unlock when
+         * we went to PAUSED. Only do this if we operating in push mode. */
+        gint length = g_queue_get_length(&basesrc->pad_queue);
+        for (i = 0; i < length; i++) {
+            GstPad *tmpPad = g_queue_peek_nth (&basesrc->pad_queue, i);
+            gst_pad_start_task (tmpPad, (GstTaskFunction) gst_base_src_loop, tmpPad, NULL);
+        }
+
+        GST_DEBUG_OBJECT (basesrc, "signal");
+        GST_LIVE_SIGNAL (basesrc);
     }
- 
+    GST_LIVE_UNLOCK (basesrc);
 
+    //bclass->ready(basesrc);
 
-
-/*
-    GST_OBJECT_LOCK (basesrc->srcpad);
-    start = (GST_PAD_MODE (basesrc->srcpad) == GST_PAD_MODE_PUSH);
-    GST_OBJECT_UNLOCK (basesrc->srcpad);
-    if (start) {
-        gst_pad_start_task (basesrc->srcpad, (GstTaskFunction) gst_base_src_loop,
-                basesrc->srcpad, NULL);
-    }
-*/
-    GST_DEBUG_OBJECT (basesrc, "signal");
-    GST_LIVE_SIGNAL (basesrc);
-  }
-  GST_LIVE_UNLOCK (basesrc);
-
-  return TRUE;
+    return TRUE;
 }
 
 static gboolean
