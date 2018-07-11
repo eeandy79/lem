@@ -68,7 +68,7 @@ tfi_sdi_src_alloc (MyBaseSrc * src, guint64 offset, guint size, GstBuffer ** buf
 {
     GstMemory *memory;
     *buffer = gst_buffer_new();
-    memory = gst_allocator_alloc(NULL, 12345, NULL);
+    memory = gst_allocator_alloc(NULL, size, NULL);
     gst_buffer_insert_memory(*buffer, -1, memory);
     return GST_FLOW_OK;
 }

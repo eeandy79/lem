@@ -220,10 +220,10 @@ static GstStateChangeReturn gst_base_src_change_state (GstElement * element,
 static void gst_base_src_loop (GstPad * pad);
 static GstFlowReturn gst_base_src_getrange (GstPad * pad, GstObject * parent,
     guint64 offset, guint length, GstBuffer ** buf);
-static GstFlowReturn gst_base_src_get_range (MyBaseSrc * src, guint64 offset,
+static GstFlowReturn gst_base_src_get_range (GstPad * pad, guint64 offset,
     guint length, GstBuffer ** buf);
 static gboolean gst_base_src_seekable (MyBaseSrc * src);
-static gboolean gst_base_src_negotiate (MyBaseSrc * basesrc);
+static gboolean gst_base_src_negotiate (GstPad *pad);
 static gboolean gst_base_src_update_length (MyBaseSrc * src, guint64 offset,
     guint * length, gboolean force);
 
@@ -309,7 +309,6 @@ gst_request_new_pad (GstElement *element, GstPadTemplate *template, const gchar 
     gst_pad_set_query_function (pad, gst_base_src_query);
     gst_pad_set_getrange_function (pad, gst_base_src_getrange);
 
-    //basesrc->srcpad = pad;
     gst_element_add_pad (GST_ELEMENT (basesrc), pad);
     g_queue_push_tail(&basesrc->pad_queue, pad);
 
@@ -762,8 +761,6 @@ gst_base_src_new_seamless_segment (MyBaseSrc * src, gint64 start, gint64 stop,
 static gboolean
 gst_base_src_send_stream_start (MyBaseSrc * src)
 {
-    gboolean ret = TRUE;
-
     if (src->priv->stream_start_pending) {
         /*
            gchar *stream_id;
@@ -784,41 +781,9 @@ gst_base_src_send_stream_start (MyBaseSrc * src)
            */
         src->priv->stream_start_pending = FALSE;
     }
-
-
-
-
-    /*
-       if (src->priv->stream_start_pending) {
-       gchar *stream_id;
-       GstEvent *event;
-
-       stream_id =
-       gst_pad_create_stream_id (src->srcpad, GST_ELEMENT_CAST (src), NULL);
-       g_print("stream_id:%s\n", stream_id);
-
-       GST_DEBUG_OBJECT (src, "Pushing STREAM_START");
-       event = gst_event_new_stream_start (stream_id);
-       gst_event_set_group_id (event, gst_util_group_id_next ());
-
-       ret = gst_pad_push_event (src->srcpad, event);
-       src->priv->stream_start_pending = FALSE;
-       g_free (stream_id);
-       }
-       */
-
-    return ret;
+    return TRUE;
 }
 
-/**
- * gst_base_src_set_caps:
- * @src: a #MyBaseSrc
- * @caps: (transfer none): a #GstCaps
- *
- * Set new caps on the basesrc source pad.
- *
- * Returns: %TRUE if the caps could be set
- */
 gboolean
 gst_base_src_set_caps (MyBaseSrc * src, GstCaps * caps)
 {
@@ -2347,9 +2312,10 @@ unexpected_length:
 
 /* must be called with LIVE_LOCK */
 static GstFlowReturn
-gst_base_src_get_range (MyBaseSrc * src, guint64 offset, guint length,
+gst_base_src_get_range (GstPad *pad, guint64 offset, guint length,
     GstBuffer ** buf)
 {
+    MyBaseSrc *src;
   GstFlowReturn ret;
   MyBaseSrcClass *bclass;
   GstClockReturn status;
@@ -2357,6 +2323,7 @@ gst_base_src_get_range (MyBaseSrc * src, guint64 offset, guint length,
   GstBuffer *in_buf;
   gboolean own_res_buf;
 
+  src = GST_MY_BASE_SRC (GST_OBJECT_PARENT (pad));
   bclass = GST_MY_BASE_SRC_GET_CLASS (src);
 
 again:
@@ -2602,7 +2569,7 @@ gst_base_src_getrange (GstPad * pad, GstObject * parent, guint64 offset,
   if (G_UNLIKELY (src->priv->flushing))
     goto flushing;
 
-  res = gst_base_src_get_range (src, offset, length, buf);
+  res = gst_base_src_get_range (pad, offset, length, buf);
 
 done:
   GST_LIVE_UNLOCK (src);
@@ -2681,7 +2648,7 @@ gst_base_src_loop (GstPad * pad)
 
   /* check if we need to renegotiate */
   if (gst_pad_check_reconfigure (pad)) {
-    if (!gst_base_src_negotiate (src)) {
+    if (!gst_base_src_negotiate (pad)) {
       gst_pad_mark_reconfigure (pad);
       if (GST_PAD_IS_FLUSHING (pad)) {
         GST_LIVE_LOCK (src);
@@ -2697,7 +2664,32 @@ gst_base_src_loop (GstPad * pad)
   if (G_UNLIKELY (src->priv->flushing || GST_PAD_IS_FLUSHING (pad)))
     goto flushing;
 
-  blocksize = src->blocksize;
+  //blocksize = src->blocksize;
+  blocksize = ((int)pad) & 0x0000ffff;
+
+  switch (src->segment.format) {
+      case GST_FORMAT_UNDEFINED:
+          g_print("GST_FORMAT_UNDEFINED\n");
+          break;
+      case GST_FORMAT_DEFAULT:
+          g_print("GST_FORMAT_UNDEFINED\n");
+          break;
+      case GST_FORMAT_BYTES:
+          g_print("GST_FORMAT_BYTES\n");
+          break;
+      case GST_FORMAT_TIME:
+          g_print("GST_FORMAT_TIME\n");
+          break;
+      case GST_FORMAT_BUFFERS:
+          g_print("GST_FORMAT_BUFFERS\n");
+          break;
+      case GST_FORMAT_PERCENT:
+          g_print("GST_FORMAT_PERCENT\n");
+  }
+
+    //exit(0);
+
+
 
   /* if we operate in bytes, we can calculate an offset */
   if (src->segment.format == GST_FORMAT_BYTES) {
@@ -2725,7 +2717,7 @@ gst_base_src_loop (GstPad * pad)
     src->priv->pending_bufferlist = NULL;
   }
 
-  ret = gst_base_src_get_range (src, position, blocksize, &buf);
+  ret = gst_base_src_get_range (pad, position, blocksize, &buf);
   if (G_UNLIKELY (ret != GST_FLOW_OK)) {
     GST_INFO_OBJECT (src, "pausing after gst_base_src_get_range() = %s",
         gst_flow_get_name (ret));
@@ -3109,66 +3101,68 @@ config_failed:
 }
 
 static gboolean
-gst_base_src_prepare_allocation (MyBaseSrc * basesrc, GstCaps * caps)
+gst_base_src_prepare_allocation (GstPad *pad, GstCaps *caps)
 {
-  MyBaseSrcClass *bclass;
-  gboolean result = TRUE;
-  GstQuery *query;
-  GstBufferPool *pool = NULL;
-  GstAllocator *allocator = NULL;
-  GstAllocationParams params;
+    MyBaseSrc *basesrc;
+    MyBaseSrcClass *bclass;
+    gboolean result = TRUE;
+    GstQuery *query;
+    GstBufferPool *pool = NULL;
+    GstAllocator *allocator = NULL;
+    GstAllocationParams params;
 
-  bclass = GST_MY_BASE_SRC_GET_CLASS (basesrc);
+    basesrc = GST_MY_BASE_SRC (GST_OBJECT_PARENT (pad));
+    bclass = GST_MY_BASE_SRC_GET_CLASS (basesrc);
 
-  /* make query and let peer pad answer, we don't really care if it worked or
-   * not, if it failed, the allocation query would contain defaults and the
-   * subclass would then set better values if needed */
-  query = gst_query_new_allocation (caps, TRUE);
-  if (!gst_pad_peer_query (basesrc->srcpad, query)) {
-    /* not a problem, just debug a little */
-    GST_DEBUG_OBJECT (basesrc, "peer ALLOCATION query failed");
-  }
+    /* make query and let peer pad answer, we don't really care if it worked or
+     * not, if it failed, the allocation query would contain defaults and the
+     * subclass would then set better values if needed */
+    query = gst_query_new_allocation (caps, TRUE);
+    if (!gst_pad_peer_query (pad, query)) {
+        /* not a problem, just debug a little */
+        GST_DEBUG_OBJECT (basesrc, "peer ALLOCATION query failed");
+    }
 
-  g_assert (bclass->decide_allocation != NULL);
-  result = bclass->decide_allocation (basesrc, query);
+    g_assert (bclass->decide_allocation != NULL);
+    result = bclass->decide_allocation (basesrc, query);
 
-  GST_DEBUG_OBJECT (basesrc, "ALLOCATION (%d) params: %" GST_PTR_FORMAT, result,
-      query);
+    GST_DEBUG_OBJECT (basesrc, "ALLOCATION (%d) params: %" GST_PTR_FORMAT, result,
+            query);
 
-  if (!result)
-    goto no_decide_allocation;
+    if (!result)
+        goto no_decide_allocation;
 
-  /* we got configuration from our peer or the decide_allocation method,
-   * parse them */
-  if (gst_query_get_n_allocation_params (query) > 0) {
-    gst_query_parse_nth_allocation_param (query, 0, &allocator, &params);
-  } else {
-    allocator = NULL;
-    gst_allocation_params_init (&params);
-  }
+    /* we got configuration from our peer or the decide_allocation method,
+     * parse them */
+    if (gst_query_get_n_allocation_params (query) > 0) {
+        gst_query_parse_nth_allocation_param (query, 0, &allocator, &params);
+    } else {
+        allocator = NULL;
+        gst_allocation_params_init (&params);
+    }
 
-  if (gst_query_get_n_allocation_pools (query) > 0)
-    gst_query_parse_nth_allocation_pool (query, 0, &pool, NULL, NULL, NULL);
+    if (gst_query_get_n_allocation_pools (query) > 0)
+        gst_query_parse_nth_allocation_pool (query, 0, &pool, NULL, NULL, NULL);
 
-  result = gst_base_src_set_allocation (basesrc, pool, allocator, &params);
+    result = gst_base_src_set_allocation (basesrc, pool, allocator, &params);
 
-  if (allocator)
-    gst_object_unref (allocator);
-  if (pool)
-    gst_object_unref (pool);
+    if (allocator)
+        gst_object_unref (allocator);
+    if (pool)
+        gst_object_unref (pool);
 
-  gst_query_unref (query);
-
-  return result;
-
-  /* Errors */
-no_decide_allocation:
-  {
-    GST_WARNING_OBJECT (basesrc, "Subclass failed to decide allocation");
     gst_query_unref (query);
 
     return result;
-  }
+
+    /* Errors */
+no_decide_allocation:
+    {
+        GST_WARNING_OBJECT (basesrc, "Subclass failed to decide allocation");
+        gst_query_unref (query);
+
+        return result;
+    }
 }
 
 /* default negotiation code.
@@ -3249,31 +3243,33 @@ no_caps:
 }
 
 static gboolean
-gst_base_src_negotiate (MyBaseSrc * basesrc)
+gst_base_src_negotiate (GstPad *pad)
 {
-  MyBaseSrcClass *bclass;
-  gboolean result;
+    MyBaseSrc *basesrc;
+    MyBaseSrcClass *bclass;
+    gboolean result;
 
-  bclass = GST_MY_BASE_SRC_GET_CLASS (basesrc);
+    basesrc = GST_MY_BASE_SRC (GST_OBJECT_PARENT (pad));
+    bclass = GST_MY_BASE_SRC_GET_CLASS (basesrc);
 
-  GST_DEBUG_OBJECT (basesrc, "starting negotiation");
+    GST_DEBUG_OBJECT (basesrc, "starting negotiation");
 
-  if (G_LIKELY (bclass->negotiate))
-    result = bclass->negotiate (basesrc);
-  else
-    result = TRUE;
+    if (G_LIKELY (bclass->negotiate))
+        result = bclass->negotiate (basesrc);
+    else
+        result = TRUE;
 
-  if (G_LIKELY (result)) {
-    GstCaps *caps;
+    if (G_LIKELY (result)) {
+        GstCaps *caps;
 
-    caps = gst_pad_get_current_caps (basesrc->srcpad);
+        caps = gst_pad_get_current_caps (pad);
 
-    result = gst_base_src_prepare_allocation (basesrc, caps);
+        result = gst_base_src_prepare_allocation (pad, caps);
 
-    if (caps)
-      gst_caps_unref (caps);
-  }
-  return result;
+        if (caps)
+            gst_caps_unref (caps);
+    }
+    return result;
 }
 
 static gboolean
@@ -3594,12 +3590,6 @@ gst_base_src_set_playing (MyBaseSrc * basesrc, gboolean live_play)
     gint length = g_queue_get_length(&basesrc->pad_queue);
     for (i = 0; i < length; i++) {
         GstPad *tmpPad = g_queue_peek_nth (&basesrc->pad_queue, i);
-        g_print("start base src loop on pad:%p\n", tmpPad);
-/*
-        GST_OBJECT_LOCK (basesrc->srcpad);
-        start = (GST_PAD_MODE (basesrc->srcpad) == GST_PAD_MODE_PUSH);
-        GST_OBJECT_UNLOCK (basesrc->srcpad);
-*/
         gst_pad_start_task (tmpPad, (GstTaskFunction) gst_base_src_loop, tmpPad, NULL);
     }
  
