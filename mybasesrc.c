@@ -2813,6 +2813,7 @@ gst_base_src_set_flushing (MyBaseSrc * basesrc, gboolean flushing)
 static gboolean
 gst_base_src_set_playing (MyBaseSrc * basesrc, gboolean live_play)
 {
+    MyBaseSrcClass *bclass = GST_MY_BASE_SRC_GET_CLASS (basesrc);
     /* we are now able to grab the LIVE lock, when we get it, we can be
      * waiting for PLAYING while blocked in the LIVE cond or we can be waiting
      * for the clock. */
@@ -2838,8 +2839,8 @@ gst_base_src_set_playing (MyBaseSrc * basesrc, gboolean live_play)
          * we went to PAUSED. Only do this if we operating in push mode. */
         gint length = g_queue_get_length(&basesrc->pad_queue);
         for (i = 0; i < length; i++) {
-            GstPad *tmpPad = g_queue_peek_nth (&basesrc->pad_queue, i);
-            gst_pad_start_task (tmpPad, (GstTaskFunction) gst_base_src_loop, tmpPad, NULL);
+            //GstPad *tmpPad = g_queue_peek_nth (&basesrc->pad_queue, i);
+            //gst_pad_start_task (tmpPad, (GstTaskFunction) gst_base_src_loop, tmpPad, NULL);
         }
 
         GST_DEBUG_OBJECT (basesrc, "signal");
@@ -2853,17 +2854,13 @@ gst_base_src_set_playing (MyBaseSrc * basesrc, gboolean live_play)
 }
 
 static gboolean
-gst_base_src_activate_push (GstPad * pad, GstObject * parent, gboolean active)
+gst_base_src_activate_push (GstPad *pad, GstObject *parent, gboolean active)
 {
-  MyBaseSrc *basesrc;
-
-  basesrc = GST_MY_BASE_SRC (parent);
+  MyBaseSrc *basesrc = GST_MY_BASE_SRC (parent);
 
   /* prepare subclass first */
   if (active) {
     GST_DEBUG_OBJECT (basesrc, "Activating in push mode");
-    g_print("Activating in push mode\n");
-
     if (G_UNLIKELY (!basesrc->can_activate_push))
       goto no_push_activation;
 
@@ -2871,11 +2868,9 @@ gst_base_src_activate_push (GstPad * pad, GstObject * parent, gboolean active)
       goto error_start;
   } else {
     GST_DEBUG_OBJECT (basesrc, "Deactivating in push mode");
-    /* now we can stop the source */
     if (G_UNLIKELY (!gst_base_src_stop (basesrc)))
       goto error_stop;
   }
-    g_print("activate push success\n");
   return TRUE;
 
   /* ERRORS */
@@ -2932,32 +2927,31 @@ error_stop:
 }
 
 static gboolean
-gst_base_src_activate_mode (GstPad * pad, GstObject * parent,
-    GstPadMode mode, gboolean active)
+gst_base_src_activate_mode (GstPad *pad, GstObject *parent, GstPadMode mode, gboolean active)
 {
-  gboolean res;
-  MyBaseSrc *src = GST_MY_BASE_SRC (parent);
+    gboolean res;
+    MyBaseSrc *src = GST_MY_BASE_SRC (parent);
 
-  src->priv->stream_start_pending = FALSE;
+    src->priv->stream_start_pending = FALSE;
 
-  GST_DEBUG_OBJECT (pad, "activating in mode %d", mode);
+    GST_DEBUG_OBJECT (pad, "activating in mode %d", mode);
 
-  switch (mode) {
-    case GST_PAD_MODE_PULL:
-        g_print("activating in pull mode %d\n", mode);
-      res = gst_base_src_activate_pull (pad, parent, active);
-      break;
-    case GST_PAD_MODE_PUSH:
-        g_print("activating in push mode: %p\n", pad);
-      src->priv->stream_start_pending = active;
-      res = gst_base_src_activate_push (pad, parent, active);
-      break;
-    default:
-      GST_LOG_OBJECT (pad, "unknown activation mode %d", mode);
-      res = FALSE;
-      break;
-  }
-  return res;
+    switch (mode) {
+        case GST_PAD_MODE_PULL:
+            g_print("activating in pull mode %d\n", mode);
+            res = gst_base_src_activate_pull (pad, parent, active);
+            break;
+        case GST_PAD_MODE_PUSH:
+            g_print("activating in push mode: %p\n", pad);
+            src->priv->stream_start_pending = active;
+            res = gst_base_src_activate_push (pad, parent, active);
+            break;
+        default:
+            GST_LOG_OBJECT (pad, "unknown activation mode %d", mode);
+            res = FALSE;
+            break;
+    }
+    return res;
 }
 
 
@@ -2965,8 +2959,11 @@ static GstStateChangeReturn
 gst_base_src_change_state (GstElement * element, GstStateChange transition)
 {
   MyBaseSrc *basesrc = GST_MY_BASE_SRC (element);
+  MyBaseSrcClass *bclass = GST_MY_BASE_SRC_GET_CLASS (basesrc);
   GstStateChangeReturn result;
   gboolean no_preroll = FALSE;
+  gboolean is_ready = FALSE;
+
 
   //basesrc = GST_MY_BASE_SRC (element);
 
@@ -2984,6 +2981,7 @@ gst_base_src_change_state (GstElement * element, GstStateChange transition)
       if (gst_base_src_is_live (basesrc)) {
         /* now we can start playback */
         gst_base_src_set_playing (basesrc, TRUE);
+        is_ready = TRUE;
       }
       break;
     default:
@@ -2994,6 +2992,10 @@ gst_base_src_change_state (GstElement * element, GstStateChange transition)
           GST_ELEMENT_CLASS (parent_class)->change_state (element,
               transition)) == GST_STATE_CHANGE_FAILURE)
     goto failure;
+
+    if (is_ready) {
+        bclass->ready(basesrc);
+    }
 
   switch (transition) {
     case GST_STATE_CHANGE_PLAYING_TO_PAUSED:

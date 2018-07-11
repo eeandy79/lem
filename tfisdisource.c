@@ -27,6 +27,9 @@ static gboolean tfi_sdi_src_query (MyBaseSrc * src, GstQuery * query);
 static GstFlowReturn tfi_sdi_src_alloc (MyBaseSrc * src, guint64 offset, guint size, GstBuffer ** buffer);
 
 static GstFlowReturn create2 (GstPad *pad, GstBuffer ** buffer);
+static void* work (void *p);
+static void* workpad (void *p);
+static void ready (MyBaseSrc *basesrc);
 
 static void
 tfi_sdi_src_class_init (TfiSdiSrcClass * klass)
@@ -60,6 +63,8 @@ tfi_sdi_src_class_init (TfiSdiSrcClass * klass)
     gstbasesrc_class->decide_allocation = tfi_sdi_src_decide_allocation;
     gstbasesrc_class->fill = tfi_sdi_src_fill;
     gstbasesrc_class->query = tfi_sdi_src_query;
+
+    gstbasesrc_class->ready = ready;
 }
 
 static GstFlowReturn
@@ -192,15 +197,53 @@ tfi_sdi_src_query (MyBaseSrc * src, GstQuery * query)
 
 static GstFlowReturn create2 (GstPad *pad, GstBuffer ** buffer)
 {
-    char* pad_name = gst_pad_get_name(pad);
     GstFlowReturn ret;
-    int blocksize = ((int)pad) & 0x0000ffff;
+    int blocksize = ((int)pad) & 0x00ffffff;
     MyBaseSrc *src = GST_MY_BASE_SRC (GST_OBJECT_PARENT (pad));
     MyBaseSrcClass *bclass = GST_MY_BASE_SRC_GET_CLASS (src);
     ret = bclass->create(src, 0, blocksize, buffer);
     GST_BUFFER_PTS (*buffer) = 10;
     GST_BUFFER_DTS (*buffer) = 11;
+    g_print("%p:%d\n", pad, blocksize);
     return ret;
+}
+
+static void* workpad (void *p) 
+{
+    GstBuffer *buffer = NULL;
+    gboolean isBuf;
+    GstPad *pad = (GstPad*)p;
+    create2(pad, &buffer);
+    isBuf = GST_IS_BUFFER(buffer);
+    g_print("isBuf:%d\n", isBuf);
+    gst_pad_push(pad, buffer);
+}
+
+static void* work (void *p) {
+    MyBaseSrc *basesrc = (MyBaseSrc*)p;
+    while(1) {
+        GstBuffer *buffer = NULL;
+        gboolean isBuf;
+        g_print("\nrunning\n");
+        gint i;
+        gint length = g_queue_get_length(&basesrc->pad_queue);
+        for (i = 0; i < length; i++) {
+            GstPad *pad = g_queue_peek_nth (&basesrc->pad_queue, i);
+            GThread *datathread = g_thread_new("padthread", &workpad, pad);
+/*
+            create2(pad, &buffer);
+            gst_pad_push(pad, buffer);
+            buffer = NULL;
+*/
+            //gst_pad_start_task (tmpPad, (GstTaskFunction) gst_base_src_loop, tmpPad, NULL);
+        }
+        sleep(1);
+    }
+}
+
+static void ready (MyBaseSrc *basesrc) {
+    TfiSdiSrc *src = (TfiSdiSrc*)basesrc;
+    src->datathread = g_thread_new("datathread", &work, basesrc);
 }
 
 static gboolean
