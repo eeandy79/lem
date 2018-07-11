@@ -209,16 +209,6 @@ struct _MyBaseSrcClass {
    * gst_base_src_set_format() */
   gboolean      (*get_size)     (MyBaseSrc *src, guint64 *size);
 
-  /* check if the resource is seekable */
-  gboolean      (*is_seekable)  (MyBaseSrc *src);
-
-  /* Prepare the segment on which to perform do_seek(), converting to the
-   * current basesrc format. */
-  gboolean      (*prepare_seek_segment) (MyBaseSrc *src, GstEvent *seek,
-                                         GstSegment *segment);
-  /* notify subclasses of a seek */
-  gboolean      (*do_seek)      (MyBaseSrc *src, GstSegment *segment);
-
   /* unlock any pending access to the resource. subclasses should unlock
    * any function ASAP. */
   gboolean      (*unlock)       (MyBaseSrc *src);

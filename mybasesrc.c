@@ -196,11 +196,7 @@ static gboolean gst_base_src_query (GstPad * pad, GstObject * parent,
 static void gst_base_src_set_pool_flushing (MyBaseSrc * basesrc,
     gboolean flushing);
 static gboolean gst_base_src_default_negotiate (MyBaseSrc * basesrc);
-static gboolean gst_base_src_default_do_seek (MyBaseSrc * src,
-    GstSegment * segment);
 static gboolean gst_base_src_default_query (MyBaseSrc * src, GstQuery * query);
-static gboolean gst_base_src_default_prepare_seek_segment (MyBaseSrc * src,
-    GstEvent * event, GstSegment * segment);
 static GstFlowReturn gst_base_src_default_create (MyBaseSrc * basesrc,
     guint64 offset, guint size, GstBuffer ** buf);
 static GstFlowReturn gst_base_src_default_alloc (MyBaseSrc * basesrc,
@@ -222,7 +218,6 @@ static GstFlowReturn gst_base_src_getrange (GstPad * pad, GstObject * parent,
     guint64 offset, guint length, GstBuffer ** buf);
 static GstFlowReturn gst_base_src_get_range (GstPad * pad, guint64 offset,
     guint length, GstBuffer ** buf);
-static gboolean gst_base_src_seekable (MyBaseSrc * src);
 static gboolean gst_base_src_negotiate (GstPad *pad);
 static gboolean gst_base_src_update_length (MyBaseSrc * src, guint64 offset,
     guint * length, gboolean force);
@@ -275,9 +270,6 @@ gst_base_src_class_init (MyBaseSrcClass * klass)
   klass->get_caps = GST_DEBUG_FUNCPTR (gst_base_src_default_get_caps);
   klass->negotiate = GST_DEBUG_FUNCPTR (gst_base_src_default_negotiate);
   klass->fixate = GST_DEBUG_FUNCPTR (gst_base_src_default_fixate);
-  klass->prepare_seek_segment =
-      GST_DEBUG_FUNCPTR (gst_base_src_default_prepare_seek_segment);
-  klass->do_seek = GST_DEBUG_FUNCPTR (gst_base_src_default_do_seek);
   klass->query = GST_DEBUG_FUNCPTR (gst_base_src_default_query);
   klass->event = GST_DEBUG_FUNCPTR (gst_base_src_default_event);
   klass->create = GST_DEBUG_FUNCPTR (gst_base_src_default_create);
@@ -988,27 +980,8 @@ gst_base_src_default_query (MyBaseSrc * src, GstQuery * query)
 
     case GST_QUERY_SEEKING:
     {
-      GstFormat format, seg_format;
-      gint64 duration;
-
-      GST_OBJECT_LOCK (src);
-      duration = src->segment.duration;
-      seg_format = src->segment.format;
-      GST_OBJECT_UNLOCK (src);
-
-      gst_query_parse_seeking (query, &format, NULL, NULL, NULL);
-      if (format == seg_format) {
-        gst_query_set_seeking (query, seg_format,
-            gst_base_src_seekable (src), 0, duration);
-        res = TRUE;
-      } else {
-        /* FIXME 2.0: return TRUE + seekable=FALSE for SEEKING query here */
-        /* Don't reply to the query to make up for demuxers which don't
-         * handle the SEEKING query yet. Players like Totem will fall back
-         * to the duration when the SEEKING query isn't answered. */
         res = FALSE;
-      }
-      break;
+        break;
     }
     case GST_QUERY_SEGMENT:
     {
@@ -1195,119 +1168,6 @@ gst_base_src_query (GstPad * pad, GstObject * parent, GstQuery * query)
     return result;
 }
 
-static gboolean
-gst_base_src_default_do_seek (MyBaseSrc * src, GstSegment * segment)
-{
-  gboolean res = TRUE;
-
-  /* update our offset if the start/stop position was updated */
-  if (segment->format == GST_FORMAT_BYTES) {
-    segment->time = segment->start;
-  } else if (segment->start == 0) {
-    /* seek to start, we can implement a default for this. */
-    segment->time = 0;
-  } else {
-    res = FALSE;
-    GST_INFO_OBJECT (src, "Can't do a default seek");
-  }
-
-  return res;
-}
-
-static gboolean
-gst_base_src_do_seek (MyBaseSrc * src, GstSegment * segment)
-{
-  MyBaseSrcClass *bclass;
-  gboolean result = FALSE;
-
-  bclass = GST_MY_BASE_SRC_GET_CLASS (src);
-
-  GST_INFO_OBJECT (src, "seeking: %" GST_SEGMENT_FORMAT, segment);
-
-  if (bclass->do_seek)
-    result = bclass->do_seek (src, segment);
-
-  return result;
-}
-
-#define SEEK_TYPE_IS_RELATIVE(t) (((t) != GST_SEEK_TYPE_NONE) && ((t) != GST_SEEK_TYPE_SET))
-
-static gboolean
-gst_base_src_default_prepare_seek_segment (MyBaseSrc * src, GstEvent * event,
-    GstSegment * segment)
-{
-  /* By default, we try one of 2 things:
-   *   - For absolute seek positions, convert the requested position to our
-   *     configured processing format and place it in the output segment \
-   *   - For relative seek positions, convert our current (input) values to the
-   *     seek format, adjust by the relative seek offset and then convert back to
-   *     the processing format
-   */
-  GstSeekType start_type, stop_type;
-  gint64 start, stop;
-  GstSeekFlags flags;
-  GstFormat seek_format, dest_format;
-  gdouble rate;
-  gboolean update;
-  gboolean res = TRUE;
-
-  gst_event_parse_seek (event, &rate, &seek_format, &flags,
-      &start_type, &start, &stop_type, &stop);
-  dest_format = segment->format;
-
-  if (seek_format == dest_format) {
-    gst_segment_do_seek (segment, rate, seek_format, flags,
-        start_type, start, stop_type, stop, &update);
-    return TRUE;
-  }
-
-  if (start_type != GST_SEEK_TYPE_NONE) {
-    /* FIXME: Handle seek_end by converting the input segment vals */
-    res =
-        gst_pad_query_convert (src->srcpad, seek_format, start, dest_format,
-        &start);
-    start_type = GST_SEEK_TYPE_SET;
-  }
-
-  if (res && stop_type != GST_SEEK_TYPE_NONE) {
-    /* FIXME: Handle seek_end by converting the input segment vals */
-    res =
-        gst_pad_query_convert (src->srcpad, seek_format, stop, dest_format,
-        &stop);
-    stop_type = GST_SEEK_TYPE_SET;
-  }
-
-  /* And finally, configure our output segment in the desired format */
-  gst_segment_do_seek (segment, rate, dest_format, flags, start_type, start,
-      stop_type, stop, &update);
-
-  if (!res)
-    goto no_format;
-
-  return res;
-
-no_format:
-  {
-    GST_DEBUG_OBJECT (src, "undefined format given, seek aborted.");
-    return FALSE;
-  }
-}
-
-static gboolean
-gst_base_src_prepare_seek_segment (MyBaseSrc * src, GstEvent * event,
-    GstSegment * seeksegment)
-{
-  MyBaseSrcClass *bclass;
-  gboolean result = FALSE;
-
-  bclass = GST_MY_BASE_SRC_GET_CLASS (src);
-
-  if (bclass->prepare_seek_segment)
-    result = bclass->prepare_seek_segment (src, event, seeksegment);
-
-  return result;
-}
-
 static GstFlowReturn
 gst_base_src_default_alloc (MyBaseSrc * src, guint64 offset,
     guint size, GstBuffer ** buffer)
@@ -1413,228 +1273,6 @@ not_ok:
       gst_buffer_unref (res_buf);
     return ret;
   }
-}
-
-/* this code implements the seeking. It is a good example
- * handling all cases.
- *
- * A seek updates the currently configured segment.start
- * and segment.stop values based on the SEEK_TYPE. If the
- * segment.start value is updated, a seek to this new position
- * should be performed.
- *
- * The seek can only be executed when we are not currently
- * streaming any data, to make sure that this is the case, we
- * acquire the STREAM_LOCK which is taken when we are in the
- * _loop() function or when a getrange() is called. Normally
- * we will not receive a seek if we are operating in pull mode
- * though. When we operate as a live source we might block on the live
- * cond, which does not release the STREAM_LOCK. Therefore we will try
- * to grab the LIVE_LOCK instead of the STREAM_LOCK to make sure it is
- * safe to perform the seek.
- *
- * When we are in the loop() function, we might be in the middle
- * of pushing a buffer, which might block in a sink. To make sure
- * that the push gets unblocked we push out a FLUSH_START event.
- * Our loop function will get a FLUSHING return value from
- * the push and will pause, effectively releasing the STREAM_LOCK.
- *
- * For a non-flushing seek, we pause the task, which might eventually
- * release the STREAM_LOCK. We say eventually because when the sink
- * blocks on the sample we might wait a very long time until the sink
- * unblocks the sample. In any case we acquire the STREAM_LOCK and
- * can continue the seek. A non-flushing seek is normally done in a
- * running pipeline to perform seamless playback, this means that the sink is
- * PLAYING and will return from its chain function.
- * In the case of a non-flushing seek we need to make sure that the
- * data we output after the seek is continuous with the previous data,
- * this is because a non-flushing seek does not reset the running-time
- * to 0. We do this by closing the currently running segment, ie. sending
- * a new_segment event with the stop position set to the last processed
- * position.
- *
- * After updating the segment.start/stop values, we prepare for
- * streaming again. We push out a FLUSH_STOP to make the peer pad
- * accept data again and we start our task again.
- *
- * A segment seek posts a message on the bus saying that the playback
- * of the segment started. We store the segment flag internally because
- * when we reach the segment.stop we have to post a segment.done
- * instead of EOS when doing a segment seek.
- */
-static gboolean
-gst_base_src_perform_seek (MyBaseSrc * src, GstEvent * event, gboolean unlock)
-{
-  gboolean res = TRUE, tres;
-  gdouble rate;
-  GstFormat seek_format, dest_format;
-  GstSeekFlags flags;
-  GstSeekType start_type, stop_type;
-  gint64 start, stop;
-  gboolean flush;
-  gboolean update;
-  gboolean relative_seek = FALSE;
-  gboolean seekseg_configured = FALSE;
-  GstSegment seeksegment;
-  guint32 seqnum;
-  GstEvent *tevent;
-
-  GST_DEBUG_OBJECT (src, "doing seek: %" GST_PTR_FORMAT, event);
-
-  GST_OBJECT_LOCK (src);
-  dest_format = src->segment.format;
-  GST_OBJECT_UNLOCK (src);
-
-  if (event) {
-    gst_event_parse_seek (event, &rate, &seek_format, &flags,
-        &start_type, &start, &stop_type, &stop);
-
-    relative_seek = SEEK_TYPE_IS_RELATIVE (start_type) ||
-        SEEK_TYPE_IS_RELATIVE (stop_type);
-
-    if (dest_format != seek_format && !relative_seek) {
-      /* If we have an ABSOLUTE position (SEEK_SET only), we can convert it
-       * here before taking the stream lock, otherwise we must convert it later,
-       * once we have the stream lock and can read the last configures segment
-       * start and stop positions */
-      gst_segment_init (&seeksegment, dest_format);
-
-      if (!gst_base_src_prepare_seek_segment (src, event, &seeksegment))
-        goto prepare_failed;
-
-      seekseg_configured = TRUE;
-    }
-
-    flush = flags & GST_SEEK_FLAG_FLUSH;
-    seqnum = gst_event_get_seqnum (event);
-  } else {
-    flush = FALSE;
-    /* get next seqnum */
-    seqnum = gst_util_seqnum_next ();
-  }
-
-  /* send flush start */
-  if (flush) {
-    tevent = gst_event_new_flush_start ();
-    gst_event_set_seqnum (tevent, seqnum);
-    gst_pad_push_event (src->srcpad, tevent);
-  } else
-    gst_pad_pause_task (src->srcpad);
-
-  /* unblock streaming thread. */
-  if (unlock)
-    gst_base_src_set_flushing (src, TRUE);
-
-  /* grab streaming lock, this should eventually be possible, either
-   * because the task is paused, our streaming thread stopped
-   * or because our peer is flushing. */
-  GST_PAD_STREAM_LOCK (src->srcpad);
-  if (G_UNLIKELY (src->priv->seqnum == seqnum)) {
-    /* we have seen this event before, issue a warning for now */
-    GST_WARNING_OBJECT (src, "duplicate event found %" G_GUINT32_FORMAT,
-        seqnum);
-  } else {
-    src->priv->seqnum = seqnum;
-    GST_DEBUG_OBJECT (src, "seek with seqnum %" G_GUINT32_FORMAT, seqnum);
-  }
-
-  if (unlock)
-    gst_base_src_set_flushing (src, FALSE);
-
-  /* If we configured the seeksegment above, don't overwrite it now. Otherwise
-   * copy the current segment info into the temp segment that we can actually
-   * attempt the seek with. We only update the real segment if the seek succeeds. */
-  if (!seekseg_configured) {
-    memcpy (&seeksegment, &src->segment, sizeof (GstSegment));
-
-    /* now configure the final seek segment */
-    if (event) {
-      if (seeksegment.format != seek_format) {
-        /* OK, here's where we give the subclass a chance to convert the relative
-         * seek into an absolute one in the processing format. We set up any
-         * absolute seek above, before taking the stream lock. */
-        if (!gst_base_src_prepare_seek_segment (src, event, &seeksegment)) {
-          GST_DEBUG_OBJECT (src, "Preparing the seek failed after flushing. "
-              "Aborting seek");
-          res = FALSE;
-        }
-      } else {
-        /* The seek format matches our processing format, no need to ask the
-         * the subclass to configure the segment. */
-        gst_segment_do_seek (&seeksegment, rate, seek_format, flags,
-            start_type, start, stop_type, stop, &update);
-      }
-    }
-    /* Else, no seek event passed, so we're just (re)starting the
-       current segment. */
-  }
-
-  if (res) {
-    GST_DEBUG_OBJECT (src, "segment configured from %" G_GINT64_FORMAT
-        " to %" G_GINT64_FORMAT ", position %" G_GINT64_FORMAT,
-        seeksegment.start, seeksegment.stop, seeksegment.position);
-
-    /* do the seek, segment.position contains the new position. */
-    res = gst_base_src_do_seek (src, &seeksegment);
-  }
-
-  /* and prepare to continue streaming */
-  if (flush) {
-    tevent = gst_event_new_flush_stop (TRUE);
-    gst_event_set_seqnum (tevent, seqnum);
-    /* send flush stop, peer will accept data and events again. We
-     * are not yet providing data as we still have the STREAM_LOCK. */
-    gst_pad_push_event (src->srcpad, tevent);
-  }
-
-  /* The subclass must have converted the segment to the processing format
-   * by now */
-  if (res && seeksegment.format != dest_format) {
-    GST_DEBUG_OBJECT (src, "Subclass failed to prepare a seek segment "
-        "in the correct format. Aborting seek.");
-    res = FALSE;
-  }
-
-  /* if the seek was successful, we update our real segment and push
-   * out the new segment. */
-  if (res) {
-    GST_OBJECT_LOCK (src);
-    memcpy (&src->segment, &seeksegment, sizeof (GstSegment));
-    GST_OBJECT_UNLOCK (src);
-
-    if (seeksegment.flags & GST_SEGMENT_FLAG_SEGMENT) {
-      GstMessage *message;
-
-      message = gst_message_new_segment_start (GST_OBJECT (src),
-          seeksegment.format, seeksegment.position);
-      gst_message_set_seqnum (message, seqnum);
-
-      gst_element_post_message (GST_ELEMENT (src), message);
-    }
-
-    src->priv->segment_pending = TRUE;
-    src->priv->segment_seqnum = seqnum;
-  }
-
-  src->priv->discont = TRUE;
-  src->running = TRUE;
-  /* and restart the task in case it got paused explicitly or by
-   * the FLUSH_START event we pushed out. */
-  tres = gst_pad_start_task (src->srcpad, (GstTaskFunction) gst_base_src_loop,
-      src->srcpad, NULL);
-  if (res && !tres)
-    res = FALSE;
-
-  /* and release the lock again so we can continue streaming */
-  GST_PAD_STREAM_UNLOCK (src->srcpad);
-
-  return res;
-
-  /* ERROR */
-prepare_failed:
-  GST_DEBUG_OBJECT (src, "Preparing the seek failed before flushing. "
-      "Aborting seek");
-  return FALSE;
 }
 
 /* all events send to this element directly. This is mainly done from the
@@ -1792,32 +1430,6 @@ gst_base_src_send_event (GstElement * element, GstEvent * event)
       break;
     case GST_EVENT_SEEK:
     {
-      gboolean started;
-
-      GST_OBJECT_LOCK (src->srcpad);
-      if (GST_PAD_MODE (src->srcpad) == GST_PAD_MODE_PULL)
-        goto wrong_mode;
-      started = GST_PAD_MODE (src->srcpad) == GST_PAD_MODE_PUSH;
-      GST_OBJECT_UNLOCK (src->srcpad);
-
-      if (started) {
-        GST_DEBUG_OBJECT (src, "performing seek");
-        /* when we are running in push mode, we can execute the
-         * seek right now. */
-        result = gst_base_src_perform_seek (src, event, TRUE);
-      } else {
-        GstEvent **event_p;
-
-        /* else we store the event and execute the seek when we
-         * get activated */
-        GST_OBJECT_LOCK (src);
-        GST_DEBUG_OBJECT (src, "queueing seek");
-        event_p = &src->pending_seek;
-        gst_event_replace ((GstEvent **) event_p, event);
-        GST_OBJECT_UNLOCK (src);
-        /* assume the seek will work */
-        result = TRUE;
-      }
       break;
     }
     case GST_EVENT_NAVIGATION:
@@ -1843,32 +1455,11 @@ gst_base_src_send_event (GstElement * element, GstEvent * event)
     default:
       break;
   }
-done:
   /* if we still have a ref to the event, unref it now */
   if (event)
     gst_event_unref (event);
 
   return result;
-
-  /* ERRORS */
-wrong_mode:
-  {
-    GST_DEBUG_OBJECT (src, "cannot perform seek when operating in pull mode");
-    GST_OBJECT_UNLOCK (src->srcpad);
-    result = FALSE;
-    goto done;
-  }
-}
-
-static gboolean
-gst_base_src_seekable (MyBaseSrc * src)
-{
-  MyBaseSrcClass *bclass;
-  bclass = GST_MY_BASE_SRC_GET_CLASS (src);
-  if (bclass->is_seekable)
-    return bclass->is_seekable (src);
-  else
-    return FALSE;
 }
 
 static void
@@ -1885,55 +1476,50 @@ gst_base_src_update_qos (MyBaseSrc * src,
 static gboolean
 gst_base_src_default_event (MyBaseSrc * src, GstEvent * event)
 {
-  gboolean result;
+    gboolean result;
+    GST_DEBUG_OBJECT (src, "handle event %" GST_PTR_FORMAT, event);
 
-  GST_DEBUG_OBJECT (src, "handle event %" GST_PTR_FORMAT, event);
+    switch (GST_EVENT_TYPE (event)) {
+        case GST_EVENT_SEEK:
+            goto not_seekable;
+            break;
+        case GST_EVENT_FLUSH_START:
+            /* cancel any blocking getrange, is normally called
+             * when in pull mode. */
+            result = gst_base_src_set_flushing (src, TRUE);
+            break;
+        case GST_EVENT_FLUSH_STOP:
+            result = gst_base_src_set_flushing (src, FALSE);
+            break;
+        case GST_EVENT_QOS:
+            {
+                gdouble proportion;
+                GstClockTimeDiff diff;
+                GstClockTime timestamp;
 
-  switch (GST_EVENT_TYPE (event)) {
-    case GST_EVENT_SEEK:
-      /* is normally called when in push mode */
-      if (!gst_base_src_seekable (src))
-        goto not_seekable;
-
-      result = gst_base_src_perform_seek (src, event, TRUE);
-      break;
-    case GST_EVENT_FLUSH_START:
-      /* cancel any blocking getrange, is normally called
-       * when in pull mode. */
-      result = gst_base_src_set_flushing (src, TRUE);
-      break;
-    case GST_EVENT_FLUSH_STOP:
-      result = gst_base_src_set_flushing (src, FALSE);
-      break;
-    case GST_EVENT_QOS:
-    {
-      gdouble proportion;
-      GstClockTimeDiff diff;
-      GstClockTime timestamp;
-
-      gst_event_parse_qos (event, NULL, &proportion, &diff, &timestamp);
-      gst_base_src_update_qos (src, proportion, diff, timestamp);
-      result = TRUE;
-      break;
+                gst_event_parse_qos (event, NULL, &proportion, &diff, &timestamp);
+                gst_base_src_update_qos (src, proportion, diff, timestamp);
+                result = TRUE;
+                break;
+            }
+        case GST_EVENT_RECONFIGURE:
+            result = TRUE;
+            break;
+        case GST_EVENT_LATENCY:
+            result = TRUE;
+            break;
+        default:
+            result = FALSE;
+            break;
     }
-    case GST_EVENT_RECONFIGURE:
-      result = TRUE;
-      break;
-    case GST_EVENT_LATENCY:
-      result = TRUE;
-      break;
-    default:
-      result = FALSE;
-      break;
-  }
-  return result;
+    return result;
 
-  /* ERRORS */
+    /* ERRORS */
 not_seekable:
-  {
-    GST_DEBUG_OBJECT (src, "is not seekable");
-    return FALSE;
-  }
+    {
+        GST_DEBUG_OBJECT (src, "is not seekable");
+        return FALSE;
+    }
 }
 
 static gboolean

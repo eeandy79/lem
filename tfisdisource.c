@@ -47,8 +47,6 @@ tfi_sdi_src_class_init (TfiSdiSrcClass * klass)
 
     gstbasesrc_class->get_caps = NULL;
     gstbasesrc_class->negotiate = NULL;
-    gstbasesrc_class->prepare_seek_segment = NULL;
-    gstbasesrc_class->do_seek = tfi_sdi_src_do_seek; // new test
     gstbasesrc_class->event = NULL;
     gstbasesrc_class->create = tfi_sdi_src_create; // new test
     gstbasesrc_class->alloc = tfi_sdi_src_alloc; // new test
