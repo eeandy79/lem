@@ -80,8 +80,6 @@ struct _MyBaseSrc {
 
   /*< protected >*/
   GstPad        *srcpad;
-  gint           pad_counter;
-  GQueue         pad_queue;
 
   /* available to subclass implementations */
   /* MT-protected (with LIVE_LOCK) */
@@ -261,9 +259,6 @@ void            gst_base_src_set_async        (MyBaseSrc *src, gboolean async);
 
 GST_BASE_API
 gboolean        gst_base_src_is_async         (MyBaseSrc *src);
-
-GST_BASE_API
-void            gst_base_src_start_complete   (MyBaseSrc * basesrc, GstFlowReturn ret);
 
 GST_BASE_API
 GstFlowReturn   gst_base_src_start_wait       (MyBaseSrc * basesrc);

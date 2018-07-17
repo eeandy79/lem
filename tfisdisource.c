@@ -38,14 +38,14 @@ request_new_pad (GstElement *element, GstPadTemplate *template, const gchar *nam
 {
     gchar *pad_name;
     GstPad *pad;
-    MyBaseSrc *basesrc = GST_MY_BASE_SRC_CAST (element);
-
-    pad_name = g_strdup_printf ("src%d", basesrc->pad_counter++);
+    TfiSdiSrc *src = (TfiSdiSrc*)element;
+    
+    pad_name = g_strdup_printf ("src%d", src->pad_counter++);
     pad = gst_pad_new_from_template (template, pad_name);
     g_free(pad_name);
 
-    gst_element_add_pad (GST_ELEMENT (basesrc), pad);
-    g_queue_push_tail(&basesrc->pad_queue, pad);
+    gst_element_add_pad (GST_ELEMENT (src), pad);
+    g_queue_push_tail(&src->pad_queue, pad);
 
     return pad;
 }
@@ -103,6 +103,9 @@ static void
 tfi_sdi_src_init (TfiSdiSrc *src)
 {
     gst_base_src_set_format (GST_MY_BASE_SRC (src), GST_FORMAT_TIME);
+    src->pad_counter = 0;
+
+    g_queue_init(&src->pad_queue);
 }
 
 static GstCaps *
@@ -219,7 +222,7 @@ static void* workpad (void *p)
 }
 
 static void* work (void *p) {
-    MyBaseSrc *basesrc = (MyBaseSrc*)p;
+    TfiSdiSrc *basesrc = (TfiSdiSrc*)p;
     while(1) {
         g_print("\nrunning\n");
         gint i;
@@ -244,6 +247,7 @@ gst_base_src_change_state (GstElement * element, GstStateChange transition)
     MyBaseSrc *basesrc = GST_MY_BASE_SRC (element);
     MyBaseSrcClass *bclass = GST_MY_BASE_SRC_GET_CLASS (basesrc);
     GstStateChangeReturn result;
+    gboolean no_preroll = FALSE;
 
     switch (transition) {
         case GST_STATE_CHANGE_NULL_TO_READY:
@@ -251,6 +255,7 @@ gst_base_src_change_state (GstElement * element, GstStateChange transition)
             break;
         case GST_STATE_CHANGE_READY_TO_PAUSED:
             g_print("TFI:GST_STATE_CHANGE_READY_TO_PAUSED\n");
+            no_preroll = TRUE;
             break;
         case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
             g_print("TFI:GST_STATE_CHANGE_PAUSED_TO_PLAYING\n");
@@ -266,6 +271,7 @@ gst_base_src_change_state (GstElement * element, GstStateChange transition)
 
     switch (transition) {
         case GST_STATE_CHANGE_PLAYING_TO_PAUSED:
+            no_preroll = TRUE;
             break;
         case GST_STATE_CHANGE_PAUSED_TO_READY:
             break;
@@ -275,7 +281,7 @@ gst_base_src_change_state (GstElement * element, GstStateChange transition)
             break;
     }
 
-    if (result == GST_STATE_CHANGE_SUCCESS)
+    if (no_preroll && result == GST_STATE_CHANGE_SUCCESS)
         result = GST_STATE_CHANGE_NO_PREROLL;
 
     return result;

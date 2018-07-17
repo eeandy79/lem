@@ -16,6 +16,8 @@ struct _TfiSdiSrc {
     MyBaseSrc element;
     GThread *datathread;
     gboolean running;
+    gint           pad_counter;
+    GQueue         pad_queue;
 };
 
 struct _TfiSdiSrcClass {

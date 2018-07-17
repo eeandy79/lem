@@ -271,10 +271,8 @@ gst_base_src_init (MyBaseSrc * basesrc, gpointer g_class)
   basesrc->num_buffers_left = -1;
   basesrc->priv->automatic_eos = TRUE;
   basesrc->can_activate_push = TRUE;
-  basesrc->pad_counter = 0;
   basesrc->blocksize = DEFAULT_BLOCKSIZE;
   basesrc->clock_id = NULL;
-  g_queue_init(&basesrc->pad_queue);
 
   gst_element_class_add_pad_template (GST_ELEMENT_CLASS (g_class),
         gst_static_pad_template_get (&tee_src_template));
@@ -2127,71 +2125,6 @@ gst_base_src_negotiate (GstPad *pad)
         }
     }
     return result;
-}
-
-void
-gst_base_src_start_complete (MyBaseSrc * basesrc, GstFlowReturn ret)
-{
-    gboolean have_size;
-    guint64 size;
-    GstFormat format;
-
-    if (ret != GST_FLOW_OK) {
-        GST_OBJECT_LOCK (basesrc);
-        basesrc->priv->start_result = ret;
-        GST_OBJECT_FLAG_UNSET (basesrc, GST_MY_BASE_SRC_FLAG_STARTING);
-        GST_ASYNC_SIGNAL (basesrc);
-        GST_OBJECT_UNLOCK (basesrc);
-        return;
-    }
-
-    GST_DEBUG_OBJECT (basesrc, "starting source");
-    format = basesrc->segment.format;
-
-    /* figure out the size */
-    have_size = FALSE;
-    size = -1;
-    if (format == GST_FORMAT_BYTES) {
-        MyBaseSrcClass *bclass = GST_MY_BASE_SRC_GET_CLASS (basesrc);
-
-        if (bclass->get_size) {
-            if (!(have_size = bclass->get_size (basesrc, &size)))
-                size = -1;
-        }
-        GST_DEBUG_OBJECT (basesrc, "setting size %" G_GUINT64_FORMAT, size);
-        /* only update the size when operating in bytes, subclass is supposed
-         * to set duration in the start method for other formats */
-        GST_OBJECT_LOCK (basesrc);
-        basesrc->segment.duration = size;
-        GST_OBJECT_UNLOCK (basesrc);
-    }
-
-    basesrc->random_access = FALSE;
-
-
-    { // take the stream lock here, we only want to let the task run when we have set the STARTED flag
-        int i;
-        gint length = g_queue_get_length(&basesrc->pad_queue);
-        for (i = 0; i < length; i++) {
-            GST_PAD_STREAM_LOCK (g_queue_peek_nth (&basesrc->pad_queue, i));
-        }
-    }
-
-    GST_OBJECT_LOCK (basesrc);
-    GST_OBJECT_FLAG_SET (basesrc, GST_MY_BASE_SRC_FLAG_STARTED);
-    GST_OBJECT_FLAG_UNSET (basesrc, GST_MY_BASE_SRC_FLAG_STARTING);
-    basesrc->priv->start_result = ret;
-    GST_ASYNC_SIGNAL (basesrc);
-    GST_OBJECT_UNLOCK (basesrc);
-
-    { // gst_pad_stream_lock
-        int i;
-        gint length = g_queue_get_length(&basesrc->pad_queue);
-        for (i = 0; i < length; i++) {
-            GST_PAD_STREAM_UNLOCK (g_queue_peek_nth (&basesrc->pad_queue, i));
-        }
-    }
-    return;
 }
 
 /**
