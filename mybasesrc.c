@@ -71,9 +71,6 @@ struct _MyBaseSrcPrivate
   GstFlowReturn start_result;   /* OBJECT_LOCK */
   gboolean async;               /* OBJECT_LOCK */
 
-  /* if a stream-start event should be sent */
-  gboolean stream_start_pending;        /* STREAM_LOCK */
-
   /* if segment should be sent and a
    * seqnum if it was originated by a seek */
   gboolean segment_pending;     /* OBJECT_LOCK */
@@ -128,14 +125,11 @@ static GstStaticPadTemplate tee_src_template = GST_STATIC_PAD_TEMPLATE ("src%d",
     GST_PAD_REQUEST,
     GST_STATIC_CAPS_ANY);
 
-static GstElementClass *parent_class = NULL;
 static gint private_offset = 0;
 
 static void gst_base_src_class_init (MyBaseSrcClass * klass);
 static void gst_base_src_init (MyBaseSrc * src, gpointer g_class);
 static void gst_base_src_finalize (GObject * object);
-static GstPad *gst_request_new_pad (
-        GstElement *element, GstPadTemplate *template, const gchar *name, const GstCaps *caps);
 
 GType
 gst_base_src_get_type (void)
@@ -178,8 +172,6 @@ static GstCaps *gst_base_src_default_fixate (MyBaseSrc * src, GstCaps * caps);
 static GstCaps *gst_base_src_fixate (MyBaseSrc * src, GstCaps * caps);
 
 static gboolean gst_base_src_is_random_access (MyBaseSrc * src);
-static gboolean gst_base_src_activate_mode (GstPad * pad, GstObject * parent,
-    GstPadMode mode, gboolean active);
 static void gst_base_src_set_property (GObject * object, guint prop_id,
     const GValue * value, GParamSpec * pspec);
 static void gst_base_src_get_property (GObject * object, guint prop_id,
@@ -206,11 +198,6 @@ static gboolean gst_base_src_decide_allocation_default (MyBaseSrc * basesrc,
 static gboolean gst_base_src_set_flushing (MyBaseSrc * basesrc,
     gboolean flushing);
 
-static gboolean gst_base_src_start (MyBaseSrc * basesrc);
-static gboolean gst_base_src_stop (MyBaseSrc * basesrc);
-
-static GstStateChangeReturn gst_base_src_change_state (GstElement * element,
-    GstStateChange transition);
 
 static void gst_base_src_loop (GstPad * pad);
 static GstFlowReturn gst_base_src_get_range2 (GstPad * pad, GstBuffer **buf);
@@ -232,8 +219,6 @@ gst_base_src_class_init (MyBaseSrcClass * klass)
     g_type_class_adjust_private_offset (klass, &private_offset);
 
   GST_DEBUG_CATEGORY_INIT (gst_base_src_debug, "basesrc", 0, "basesrc element");
-
-  parent_class = g_type_class_peek_parent (klass);
 
   gobject_class->finalize = gst_base_src_finalize;
   gobject_class->set_property = gst_base_src_set_property;
@@ -259,10 +244,7 @@ gst_base_src_class_init (MyBaseSrcClass * klass)
           "Apply current stream time to buffers", DEFAULT_DO_TIMESTAMP,
           G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS));
 
-  gstelement_class->change_state =
-      GST_DEBUG_FUNCPTR (gst_base_src_change_state);
   gstelement_class->send_event = GST_DEBUG_FUNCPTR (gst_base_src_send_event);
-  gstelement_class->request_new_pad = gst_request_new_pad;
 
   klass->get_caps = GST_DEBUG_FUNCPTR (gst_base_src_default_get_caps);
   klass->negotiate = GST_DEBUG_FUNCPTR (gst_base_src_default_negotiate);
@@ -273,32 +255,9 @@ gst_base_src_class_init (MyBaseSrcClass * klass)
   klass->alloc = GST_DEBUG_FUNCPTR (gst_base_src_default_alloc);
   klass->decide_allocation = GST_DEBUG_FUNCPTR (gst_base_src_decide_allocation_default);
 
-  /* Registering debug symbols for function pointers */
-  GST_DEBUG_REGISTER_FUNCPTR (gst_base_src_activate_mode);
   GST_DEBUG_REGISTER_FUNCPTR (gst_base_src_event);
   GST_DEBUG_REGISTER_FUNCPTR (gst_base_src_query);
   GST_DEBUG_REGISTER_FUNCPTR (gst_base_src_fixate);
-}
-
-static GstPad *
-gst_request_new_pad (GstElement *element, GstPadTemplate *template, const gchar *name, const GstCaps *caps)
-{
-    gchar *pad_name;
-    GstPad *pad;
-    MyBaseSrc *basesrc = GST_MY_BASE_SRC_CAST (element);
-
-    pad_name = g_strdup_printf ("src%d", basesrc->pad_counter++);
-    pad = gst_pad_new_from_template (template, pad_name);
-    g_free(pad_name);
-
-    gst_pad_set_activatemode_function (pad, gst_base_src_activate_mode);
-    gst_pad_set_event_function (pad, gst_base_src_event);
-    gst_pad_set_query_function (pad, gst_base_src_query);
-
-    gst_element_add_pad (GST_ELEMENT (basesrc), pad);
-    g_queue_push_tail(&basesrc->pad_queue, pad);
-
-    return pad;
 }
 
 static void
@@ -308,7 +267,6 @@ gst_base_src_init (MyBaseSrc * basesrc, gpointer g_class)
   g_cond_init (&basesrc->live_cond);
 
   basesrc->priv = gst_base_src_get_instance_private (basesrc);
-  basesrc->is_live = FALSE;
   basesrc->num_buffers = DEFAULT_NUM_BUFFERS;
   basesrc->num_buffers_left = -1;
   basesrc->priv->automatic_eos = TRUE;
@@ -353,8 +311,6 @@ gst_base_src_finalize (GObject * object)
         NULL);
     g_list_free (basesrc->priv->pending_events);
   }
-
-  G_OBJECT_CLASS (parent_class)->finalize (object);
 }
 
 /* Call with LIVE_LOCK held */
@@ -410,52 +366,6 @@ gst_base_src_wait_playing (MyBaseSrc * src)
   GST_LIVE_UNLOCK (src);
 
   return ret;
-}
-
-/**
- * gst_base_src_set_live:
- * @src: base source instance
- * @live: new live-mode
- *
- * If the element listens to a live source, @live should
- * be set to %TRUE.
- *
- * A live source will not produce data in the PAUSED state and
- * will therefore not be able to participate in the PREROLL phase
- * of a pipeline. To signal this fact to the application and the
- * pipeline, the state change return value of the live source will
- * be GST_STATE_CHANGE_NO_PREROLL.
- */
-void
-gst_base_src_set_live (MyBaseSrc * src, gboolean live)
-{
-  g_return_if_fail (GST_IS_MY_BASE_SRC (src));
-
-  GST_OBJECT_LOCK (src);
-  src->is_live = live;
-  GST_OBJECT_UNLOCK (src);
-}
-
-/**
- * gst_base_src_is_live:
- * @src: base source instance
- *
- * Check if an element is in live mode.
- *
- * Returns: %TRUE if element is in live mode.
- */
-gboolean
-gst_base_src_is_live (MyBaseSrc * src)
-{
-  gboolean result;
-
-  g_return_val_if_fail (GST_IS_MY_BASE_SRC (src), FALSE);
-
-  GST_OBJECT_LOCK (src);
-  result = src->is_live;
-  GST_OBJECT_UNLOCK (src);
-
-  return result;
 }
 
 /**
@@ -559,56 +469,6 @@ gst_base_src_is_async (MyBaseSrc * src)
   GST_OBJECT_UNLOCK (src);
 
   return res;
-}
-
-
-/**
- * gst_base_src_query_latency:
- * @src: the source
- * @live: (out) (allow-none): if the source is live
- * @min_latency: (out) (allow-none): the min latency of the source
- * @max_latency: (out) (allow-none): the max latency of the source
- *
- * Query the source for the latency parameters. @live will be %TRUE when @src is
- * configured as a live source. @min_latency and @max_latency will be set
- * to the difference between the running time and the timestamp of the first
- * buffer.
- *
- * This function is mostly used by subclasses.
- *
- * Returns: %TRUE if the query succeeded.
- */
-gboolean
-gst_base_src_query_latency (MyBaseSrc * src, gboolean * live,
-    GstClockTime * min_latency, GstClockTime * max_latency)
-{
-  GstClockTime min;
-
-  g_return_val_if_fail (GST_IS_MY_BASE_SRC (src), FALSE);
-
-  GST_OBJECT_LOCK (src);
-  if (live)
-    *live = src->is_live;
-
-  /* if we have a startup latency, report this one, else report 0. Subclasses
-   * are supposed to override the query function if they want something
-   * else. */
-  if (src->priv->latency != -1)
-    min = src->priv->latency;
-  else
-    min = 0;
-
-  if (min_latency)
-    *min_latency = min;
-  if (max_latency)
-    *max_latency = min;
-
-  GST_LOG_OBJECT (src, "latency: live %d, min %" GST_TIME_FORMAT
-      ", max %" GST_TIME_FORMAT, src->is_live, GST_TIME_ARGS (min),
-      GST_TIME_ARGS (min));
-  GST_OBJECT_UNLOCK (src);
-
-  return TRUE;
 }
 
 /**
@@ -743,33 +603,6 @@ gst_base_src_new_seamless_segment (MyBaseSrc * src, gint64 start, gint64 stop,
   return res;
 }
 
-/* called with STREAM_LOCK */
-static gboolean
-gst_base_src_send_stream_start (MyBaseSrc * src)
-{
-    if (src->priv->stream_start_pending) {
-        /*
-           gchar *stream_id;
-           GstEvent *event;
-           GstPad *tmpPad;
-
-           int i = 0;
-           gint length = g_queue_get_length(&src->pad_queue);
-           for (i = 0; i < length; i++) {
-           tmpPad = g_queue_peek_nth (&src->pad_queue, i);
-           stream_id = gst_pad_create_stream_id (tmpPad, GST_ELEMENT_CAST (src), NULL);
-           g_print("stream_id:%s\n", stream_id);
-           event = gst_event_new_stream_start (stream_id);
-           gst_event_set_group_id (event, gst_util_group_id_next ());
-           ret = gst_pad_push_event (tmpPad, event);
-           g_free (stream_id);
-           }
-           */
-        src->priv->stream_start_pending = FALSE;
-    }
-    return TRUE;
-}
-
 gboolean
 gst_base_src_set_caps (MyBaseSrc * src, GstCaps * caps)
 {
@@ -778,8 +611,6 @@ gst_base_src_set_caps (MyBaseSrc * src, GstCaps * caps)
   GstCaps *current_caps;
 
   bclass = GST_MY_BASE_SRC_GET_CLASS (src);
-
-  gst_base_src_send_stream_start (src);
 
   current_caps = gst_pad_get_current_caps (GST_MY_BASE_SRC_PAD (src));
   if (current_caps && gst_caps_is_equal (current_caps, caps)) {
@@ -1026,20 +857,6 @@ gst_base_src_default_query (MyBaseSrc * src, GstQuery * query)
       break;
     }
     case GST_QUERY_LATENCY:
-    {
-      GstClockTime min, max;
-      gboolean live;
-
-      /* Subclasses should override and implement something useful */
-      res = gst_base_src_query_latency (src, &live, &min, &max);
-
-      GST_LOG_OBJECT (src, "report latency: live %d, min %" GST_TIME_FORMAT
-          ", max %" GST_TIME_FORMAT, live, GST_TIME_ARGS (min),
-          GST_TIME_ARGS (max));
-
-      gst_query_set_latency (query, live, min, max);
-      break;
-    }
     case GST_QUERY_JITTER:
     case GST_QUERY_RATE:
       res = FALSE;
@@ -1312,8 +1129,7 @@ gst_base_src_send_event (GstElement * element, GstEvent * event)
       GST_OBJECT_UNLOCK (src->srcpad);
 
       /* ... and for live sources, only if in playing state */
-      if (src->is_live) {
-        if (!src->live_running)
+      if (!src->live_running) {
           start = FALSE;
       }
 
@@ -1599,211 +1415,6 @@ gst_base_src_get_property (GObject * object, guint prop_id, GValue * value,
   }
 }
 
-/* with STREAM_LOCK and LOCK */
-static GstClockReturn
-gst_base_src_wait (MyBaseSrc * basesrc, GstClock * clock, GstClockTime time)
-{
-  GstClockReturn ret;
-  GstClockID id;
-
-  id = gst_clock_new_single_shot_id (clock, time);
-
-  basesrc->clock_id = id;
-  /* release the live lock while waiting */
-  GST_LIVE_UNLOCK (basesrc);
-
-  ret = gst_clock_id_wait (id, NULL);
-
-  GST_LIVE_LOCK (basesrc);
-  gst_clock_id_unref (id);
-  basesrc->clock_id = NULL;
-
-  return ret;
-}
-
-/* perform synchronisation on a buffer.
- * with STREAM_LOCK.
- */
-static GstClockReturn
-gst_base_src_do_sync (MyBaseSrc * basesrc, GstBuffer * buffer)
-{
-  GstClockReturn result;
-  GstClockTime start, end;
-  MyBaseSrcClass *bclass;
-  GstClockTime base_time;
-  GstClock *clock;
-  GstClockTime now = GST_CLOCK_TIME_NONE, pts, dts, timestamp;
-  gboolean do_timestamp, first, pseudo_live, is_live;
-
-  bclass = GST_MY_BASE_SRC_GET_CLASS (basesrc);
-
-  start = end = -1;
-  if (bclass->get_times)
-    bclass->get_times (basesrc, buffer, &start, &end);
-
-  /* get buffer timestamp */
-  dts = GST_BUFFER_DTS (buffer);
-  pts = GST_BUFFER_PTS (buffer);
-
-  if (GST_CLOCK_TIME_IS_VALID (dts))
-    timestamp = dts;
-  else
-    timestamp = pts;
-
-  /* grab the lock to prepare for clocking and calculate the startup
-   * latency. */
-  GST_OBJECT_LOCK (basesrc);
-
-  is_live = basesrc->is_live;
-  /* if we are asked to sync against the clock we are a pseudo live element */
-  pseudo_live = (start != -1 && is_live);
-  /* check for the first buffer */
-  first = (basesrc->priv->latency == -1);
-
-  if (timestamp != -1 && pseudo_live) {
-    GstClockTime latency;
-
-    /* we have a timestamp and a sync time, latency is the diff */
-    if (timestamp <= start)
-      latency = start - timestamp;
-    else
-      latency = 0;
-
-    if (first) {
-      GST_DEBUG_OBJECT (basesrc, "pseudo_live with latency %" GST_TIME_FORMAT,
-          GST_TIME_ARGS (latency));
-      /* first time we calculate latency, just configure */
-      basesrc->priv->latency = latency;
-    } else {
-      if (basesrc->priv->latency != latency) {
-        /* we have a new latency, FIXME post latency message */
-        basesrc->priv->latency = latency;
-        GST_DEBUG_OBJECT (basesrc, "latency changed to %" GST_TIME_FORMAT,
-            GST_TIME_ARGS (latency));
-      }
-    }
-  } else if (first) {
-    GST_DEBUG_OBJECT (basesrc, "no latency needed, live %d, sync %d",
-        is_live, start != -1);
-    basesrc->priv->latency = 0;
-  }
-
-  /* get clock, if no clock, we can't sync or do timestamps */
-  if ((clock = GST_ELEMENT_CLOCK (basesrc)) == NULL)
-    goto no_clock;
-  else
-    gst_object_ref (clock);
-
-  base_time = GST_ELEMENT_CAST (basesrc)->base_time;
-
-  do_timestamp = basesrc->priv->do_timestamp;
-  GST_OBJECT_UNLOCK (basesrc);
-
-  /* first buffer, calculate the timestamp offset */
-  if (first) {
-    GstClockTime running_time;
-
-    now = gst_clock_get_time (clock);
-    running_time = now - base_time;
-
-    GST_LOG_OBJECT (basesrc,
-        "startup PTS: %" GST_TIME_FORMAT ", DTS %" GST_TIME_FORMAT
-        ", running_time %" GST_TIME_FORMAT, GST_TIME_ARGS (pts),
-        GST_TIME_ARGS (dts), GST_TIME_ARGS (running_time));
-
-    if (pseudo_live && timestamp != -1) {
-      /* live source and we need to sync, add startup latency to all timestamps
-       * to get the real running_time. Live sources should always timestamp
-       * according to the current running time. */
-      basesrc->priv->ts_offset = GST_CLOCK_DIFF (timestamp, running_time);
-
-      GST_LOG_OBJECT (basesrc, "live with sync, ts_offset %" GST_TIME_FORMAT,
-          GST_TIME_ARGS (basesrc->priv->ts_offset));
-    } else {
-      basesrc->priv->ts_offset = 0;
-      GST_LOG_OBJECT (basesrc, "no timestamp offset needed");
-    }
-
-    if (!GST_CLOCK_TIME_IS_VALID (dts)) {
-      if (do_timestamp) {
-        dts = running_time;
-      } else if (!GST_CLOCK_TIME_IS_VALID (pts)) {
-        if (GST_CLOCK_TIME_IS_VALID (basesrc->segment.start)) {
-          dts = basesrc->segment.start;
-        } else {
-          dts = 0;
-        }
-      }
-      GST_BUFFER_DTS (buffer) = dts;
-
-      GST_LOG_OBJECT (basesrc, "created DTS %" GST_TIME_FORMAT,
-          GST_TIME_ARGS (dts));
-    }
-  } else {
-    /* not the first buffer, the timestamp is the diff between the clock and
-     * base_time */
-    if (do_timestamp && !GST_CLOCK_TIME_IS_VALID (dts)) {
-      now = gst_clock_get_time (clock);
-
-      dts = now - base_time;
-      GST_BUFFER_DTS (buffer) = dts;
-
-      GST_LOG_OBJECT (basesrc, "created DTS %" GST_TIME_FORMAT,
-          GST_TIME_ARGS (dts));
-    }
-  }
-  if (!GST_CLOCK_TIME_IS_VALID (pts)) {
-    if (!GST_BUFFER_FLAG_IS_SET (buffer, GST_BUFFER_FLAG_DELTA_UNIT))
-      pts = dts;
-
-    GST_BUFFER_PTS (buffer) = dts;
-
-    GST_LOG_OBJECT (basesrc, "created PTS %" GST_TIME_FORMAT,
-        GST_TIME_ARGS (pts));
-  }
-
-  /* if we don't have a buffer timestamp, we don't sync */
-  if (!GST_CLOCK_TIME_IS_VALID (start))
-    goto no_sync;
-
-  if (is_live) {
-    /* for pseudo live sources, add our ts_offset to the timestamp */
-    if (GST_CLOCK_TIME_IS_VALID (pts))
-      GST_BUFFER_PTS (buffer) += basesrc->priv->ts_offset;
-    if (GST_CLOCK_TIME_IS_VALID (dts))
-      GST_BUFFER_DTS (buffer) += basesrc->priv->ts_offset;
-    start += basesrc->priv->ts_offset;
-  }
-
-  GST_LOG_OBJECT (basesrc,
-      "waiting for clock, base time %" GST_TIME_FORMAT
-      ", stream_start %" GST_TIME_FORMAT,
-      GST_TIME_ARGS (base_time), GST_TIME_ARGS (start));
-
-  result = gst_base_src_wait (basesrc, clock, start + base_time);
-
-  gst_object_unref (clock);
-
-  GST_LOG_OBJECT (basesrc, "clock entry done: %d", result);
-
-  return result;
-
-  /* special cases */
-no_clock:
-  {
-    GST_DEBUG_OBJECT (basesrc, "we have no clock");
-    GST_OBJECT_UNLOCK (basesrc);
-    return GST_CLOCK_OK;
-  }
-no_sync:
-  {
-    GST_DEBUG_OBJECT (basesrc, "no sync needed");
-    gst_object_unref (clock);
-    return GST_CLOCK_OK;
-  }
-}
-
-/* Called with STREAM_LOCK and LIVE_LOCK */
 static gboolean
 gst_base_src_update_length (MyBaseSrc * src, guint64 offset, guint * length,
     gboolean force)
@@ -1904,12 +1515,10 @@ gst_base_src_is_random_access (MyBaseSrc * src)
   /* we need to start the basesrc to check random access */
   if (!GST_MY_BASE_SRC_IS_STARTED (src)) {
     GST_LOG_OBJECT (src, "doing start/stop to check get_range support");
-    if (G_LIKELY (gst_base_src_start (src))) {
-      if (gst_base_src_start_wait (src) != GST_FLOW_OK)
+    if (gst_base_src_start_wait (src) != GST_FLOW_OK)
         goto start_failed;
-      gst_base_src_stop (src);
-    }
   }
+
 
   return src->random_access;
 
@@ -1946,8 +1555,6 @@ gst_base_src_loop (GstPad * pad)
         gst_pad_pause_task (pad);
         goto done;
     }
-
-    gst_base_src_send_stream_start (src);
 
     /* The stream-start event could've caused something to flush us */
     GST_LIVE_LOCK (src);
@@ -2522,87 +2129,6 @@ gst_base_src_negotiate (GstPad *pad)
     return result;
 }
 
-static gboolean
-gst_base_src_start (MyBaseSrc * basesrc)
-{
-  MyBaseSrcClass *bclass;
-  gboolean result;
-
-  GST_LIVE_LOCK (basesrc);
-
-  GST_OBJECT_LOCK (basesrc);
-  if (GST_MY_BASE_SRC_IS_STARTING (basesrc))
-    goto was_starting;
-  if (GST_MY_BASE_SRC_IS_STARTED (basesrc))
-    goto was_started;
-
-  basesrc->priv->start_result = GST_FLOW_FLUSHING;
-  GST_OBJECT_FLAG_SET (basesrc, GST_MY_BASE_SRC_FLAG_STARTING);
-  gst_segment_init (&basesrc->segment, basesrc->segment.format);
-  GST_OBJECT_UNLOCK (basesrc);
-
-  basesrc->num_buffers_left = basesrc->num_buffers;
-  basesrc->running = FALSE;
-  basesrc->priv->segment_pending = FALSE;
-  basesrc->priv->segment_seqnum = gst_util_seqnum_next ();
-  basesrc->priv->forced_eos = FALSE;
-  GST_LIVE_UNLOCK (basesrc);
-
-  bclass = GST_MY_BASE_SRC_GET_CLASS (basesrc);
-  if (bclass->start)
-    result = bclass->start (basesrc);
-  else
-    result = TRUE;
-
-  if (!result)
-    goto could_not_start;
-
-  if (!gst_base_src_is_async (basesrc)) {
-    gst_base_src_start_complete (basesrc, GST_FLOW_OK);
-    /* not really waiting here, we call this to get the result
-     * from the start_complete call */
-    result = gst_base_src_start_wait (basesrc) == GST_FLOW_OK;
-  }
-
-  return result;
-
-  /* ERROR */
-was_starting:
-  {
-    GST_DEBUG_OBJECT (basesrc, "was starting");
-    GST_OBJECT_UNLOCK (basesrc);
-    GST_LIVE_UNLOCK (basesrc);
-    return TRUE;
-  }
-was_started:
-  {
-    GST_DEBUG_OBJECT (basesrc, "was started");
-    GST_OBJECT_UNLOCK (basesrc);
-    GST_LIVE_UNLOCK (basesrc);
-    return TRUE;
-  }
-could_not_start:
-  {
-    GST_DEBUG_OBJECT (basesrc, "could not start");
-    /* subclass is supposed to post a message but we post one as a fallback
-     * just in case. We don't have to call _stop. */
-    GST_ELEMENT_ERROR (basesrc, CORE, STATE_CHANGE, (NULL),
-        ("Failed to start"));
-    gst_base_src_start_complete (basesrc, GST_FLOW_ERROR);
-    return FALSE;
-  }
-}
-
-/**
- * gst_base_src_start_complete:
- * @basesrc: base source instance
- * @ret: a #GstFlowReturn
- *
- * Complete an asynchronous start operation. When the subclass overrides the
- * start method, it should call gst_base_src_start_complete() when the start
- * operation completes either from the same thread or from an asynchronous
- * helper thread.
- */
 void
 gst_base_src_start_complete (MyBaseSrc * basesrc, GstFlowReturn ret)
 {
@@ -2694,60 +2220,6 @@ gst_base_src_start_wait (MyBaseSrc * basesrc)
 }
 
 static gboolean
-gst_base_src_stop (MyBaseSrc * basesrc)
-{
-    MyBaseSrcClass *bclass;
-    gboolean result = TRUE;
-    gint i, length;
-
-    GST_DEBUG_OBJECT (basesrc, "stopping source");
-
-    /* flush all */
-    gst_base_src_set_flushing (basesrc, TRUE);
-
-    /* stop the task */
-    length = g_queue_get_length(&basesrc->pad_queue);
-    for (i = 0; i < length; i++) {
-        gst_pad_stop_task (g_queue_peek_nth (&basesrc->pad_queue, i));
-    }
-
-    /* stop flushing, this will balance unlock/unlock_stop calls */
-    gst_base_src_set_flushing (basesrc, FALSE);
-
-    GST_OBJECT_LOCK (basesrc);
-    if (!GST_MY_BASE_SRC_IS_STARTED (basesrc) && !GST_MY_BASE_SRC_IS_STARTING (basesrc))
-        goto was_stopped;
-
-    GST_OBJECT_FLAG_UNSET (basesrc, GST_MY_BASE_SRC_FLAG_STARTING);
-    GST_OBJECT_FLAG_UNSET (basesrc, GST_MY_BASE_SRC_FLAG_STARTED);
-    basesrc->priv->start_result = GST_FLOW_FLUSHING;
-    GST_ASYNC_SIGNAL (basesrc);
-    GST_OBJECT_UNLOCK (basesrc);
-
-    bclass = GST_MY_BASE_SRC_GET_CLASS (basesrc);
-    if (bclass->stop)
-        result = bclass->stop (basesrc);
-
-    if (basesrc->priv->pending_bufferlist != NULL) {
-        gst_buffer_list_unref (basesrc->priv->pending_bufferlist);
-        basesrc->priv->pending_bufferlist = NULL;
-    }
-
-    gst_base_src_set_allocation (basesrc, NULL, NULL, NULL);
-
-    return result;
-
-was_stopped:
-    {
-        GST_DEBUG_OBJECT (basesrc, "was stopped");
-        GST_OBJECT_UNLOCK (basesrc);
-        return TRUE;
-    }
-}
-
-/* start or stop flushing dataprocessing
- */
-static gboolean
 gst_base_src_set_flushing (MyBaseSrc * basesrc, gboolean flushing)
 {
   MyBaseSrcClass *bclass;
@@ -2808,319 +2280,4 @@ gst_base_src_set_flushing (MyBaseSrc * basesrc, gboolean flushing)
   return TRUE;
 }
 
-/* the purpose of this function is to make sure that a live source blocks in the
- * LIVE lock or leaves the LIVE lock and continues playing. */
-static gboolean
-gst_base_src_set_playing (MyBaseSrc * basesrc, gboolean live_play)
-{
-    MyBaseSrcClass *bclass = GST_MY_BASE_SRC_GET_CLASS (basesrc);
-    /* we are now able to grab the LIVE lock, when we get it, we can be
-     * waiting for PLAYING while blocked in the LIVE cond or we can be waiting
-     * for the clock. */
-    GST_LIVE_LOCK (basesrc);
-    GST_DEBUG_OBJECT (basesrc, "unschedule clock");
 
-    /* unblock clock sync (if any) */
-    if (basesrc->clock_id)
-        gst_clock_id_unschedule (basesrc->clock_id);
-
-    /* configure what to do when we get to the LIVE lock. */
-    GST_DEBUG_OBJECT (basesrc, "live running %d", live_play);
-    basesrc->live_running = live_play;
-
-    if (live_play) {
-        gint i;
-
-        /* for live sources we restart the timestamp correction */
-        GST_OBJECT_LOCK (basesrc);
-        basesrc->priv->latency = -1;
-        GST_OBJECT_UNLOCK (basesrc);
-        /* have to restart the task in case it stopped because of the unlock when
-         * we went to PAUSED. Only do this if we operating in push mode. */
-        gint length = g_queue_get_length(&basesrc->pad_queue);
-        for (i = 0; i < length; i++) {
-            //GstPad *tmpPad = g_queue_peek_nth (&basesrc->pad_queue, i);
-            //gst_pad_start_task (tmpPad, (GstTaskFunction) gst_base_src_loop, tmpPad, NULL);
-        }
-
-        GST_DEBUG_OBJECT (basesrc, "signal");
-        GST_LIVE_SIGNAL (basesrc);
-    }
-    GST_LIVE_UNLOCK (basesrc);
-
-    //bclass->ready(basesrc);
-
-    return TRUE;
-}
-
-static gboolean
-gst_base_src_activate_push (GstPad *pad, GstObject *parent, gboolean active)
-{
-  MyBaseSrc *basesrc = GST_MY_BASE_SRC (parent);
-
-  /* prepare subclass first */
-  if (active) {
-    GST_DEBUG_OBJECT (basesrc, "Activating in push mode");
-    if (G_UNLIKELY (!basesrc->can_activate_push))
-      goto no_push_activation;
-
-    if (G_UNLIKELY (!gst_base_src_start (basesrc)))
-      goto error_start;
-  } else {
-    GST_DEBUG_OBJECT (basesrc, "Deactivating in push mode");
-    if (G_UNLIKELY (!gst_base_src_stop (basesrc)))
-      goto error_stop;
-  }
-  return TRUE;
-
-  /* ERRORS */
-no_push_activation:
-  {
-    g_print("Subclass disabled push-mode activation\n");
-    GST_WARNING_OBJECT (basesrc, "Subclass disabled push-mode activation");
-    return FALSE;
-  }
-error_start:
-  {
-    g_print("Failed to start in push mode\n");
-    GST_WARNING_OBJECT (basesrc, "Failed to start in push mode");
-    return FALSE;
-  }
-error_stop:
-  {
-    g_print("Failed to stop in push mode\n");
-    GST_DEBUG_OBJECT (basesrc, "Failed to stop in push mode");
-    return FALSE;
-  }
-}
-
-static gboolean
-gst_base_src_activate_pull (GstPad * pad, GstObject * parent, gboolean active)
-{
-  MyBaseSrc *basesrc;
-
-  basesrc = GST_MY_BASE_SRC (parent);
-
-  /* prepare subclass first */
-  if (active) {
-    GST_DEBUG_OBJECT (basesrc, "Activating in pull mode");
-    if (G_UNLIKELY (!gst_base_src_start (basesrc)))
-      goto error_start;
-  } else {
-    GST_DEBUG_OBJECT (basesrc, "Deactivating in pull mode");
-    if (G_UNLIKELY (!gst_base_src_stop (basesrc)))
-      goto error_stop;
-  }
-  return TRUE;
-
-  /* ERRORS */
-error_start:
-  {
-    GST_ERROR_OBJECT (basesrc, "Failed to start in pull mode");
-    return FALSE;
-  }
-error_stop:
-  {
-    GST_ERROR_OBJECT (basesrc, "Failed to stop in pull mode");
-    return FALSE;
-  }
-}
-
-static gboolean
-gst_base_src_activate_mode (GstPad *pad, GstObject *parent, GstPadMode mode, gboolean active)
-{
-    gboolean res;
-    MyBaseSrc *src = GST_MY_BASE_SRC (parent);
-
-    src->priv->stream_start_pending = FALSE;
-
-    GST_DEBUG_OBJECT (pad, "activating in mode %d", mode);
-
-    switch (mode) {
-        case GST_PAD_MODE_PULL:
-            g_print("activating in pull mode %d\n", mode);
-            res = gst_base_src_activate_pull (pad, parent, active);
-            break;
-        case GST_PAD_MODE_PUSH:
-            g_print("activating in push mode: %p\n", pad);
-            src->priv->stream_start_pending = active;
-            res = gst_base_src_activate_push (pad, parent, active);
-            break;
-        default:
-            GST_LOG_OBJECT (pad, "unknown activation mode %d", mode);
-            res = FALSE;
-            break;
-    }
-    return res;
-}
-
-
-static GstStateChangeReturn
-gst_base_src_change_state (GstElement * element, GstStateChange transition)
-{
-  MyBaseSrc *basesrc = GST_MY_BASE_SRC (element);
-  MyBaseSrcClass *bclass = GST_MY_BASE_SRC_GET_CLASS (basesrc);
-  GstStateChangeReturn result;
-  gboolean no_preroll = FALSE;
-  gboolean is_ready = FALSE;
-
-
-  //basesrc = GST_MY_BASE_SRC (element);
-
-  switch (transition) {
-    case GST_STATE_CHANGE_NULL_TO_READY:
-        g_print("GST_STATE_CHANGE_NULL_TO_READY\n");
-      break;
-    case GST_STATE_CHANGE_READY_TO_PAUSED:
-        g_print("GST_STATE_CHANGE_READY_TO_PAUSED\n");
-      no_preroll = gst_base_src_is_live (basesrc);
-      break;
-    case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
-        g_print("GST_STATE_CHANGE_PAUSED_TO_PLAYING\n");
-      GST_DEBUG_OBJECT (basesrc, "PAUSED->PLAYING");
-      if (gst_base_src_is_live (basesrc)) {
-        /* now we can start playback */
-        gst_base_src_set_playing (basesrc, TRUE);
-        is_ready = TRUE;
-      }
-      break;
-    default:
-      break;
-  }
-
-  if ((result =
-          GST_ELEMENT_CLASS (parent_class)->change_state (element,
-              transition)) == GST_STATE_CHANGE_FAILURE)
-    goto failure;
-
-    if (is_ready) {
-        bclass->ready(basesrc);
-    }
-
-  switch (transition) {
-    case GST_STATE_CHANGE_PLAYING_TO_PAUSED:
-      GST_DEBUG_OBJECT (basesrc, "PLAYING->PAUSED");
-      if (gst_base_src_is_live (basesrc)) {
-        /* make sure we block in the live cond in PAUSED */
-        gst_base_src_set_playing (basesrc, FALSE);
-        no_preroll = TRUE;
-      }
-      break;
-    case GST_STATE_CHANGE_PAUSED_TO_READY:
-    {
-      /* we don't need to unblock anything here, the pad deactivation code
-       * already did this */
-      if (g_atomic_int_get (&basesrc->priv->has_pending_eos)) {
-        GST_OBJECT_LOCK (basesrc);
-        CLEAR_PENDING_EOS (basesrc);
-        GST_OBJECT_UNLOCK (basesrc);
-      }
-      gst_event_replace (&basesrc->pending_seek, NULL);
-      break;
-    }
-    case GST_STATE_CHANGE_READY_TO_NULL:
-      break;
-    default:
-      break;
-  }
-
-  if (no_preroll && result == GST_STATE_CHANGE_SUCCESS)
-    result = GST_STATE_CHANGE_NO_PREROLL;
-
-  return result;
-
-  /* ERRORS */
-failure:
-  {
-    GST_DEBUG_OBJECT (basesrc, "parent failed state change");
-    return result;
-  }
-}
-
-/**
- * gst_base_src_get_buffer_pool:
- * @src: a #MyBaseSrc
- *
- * Returns: (transfer full): the instance of the #GstBufferPool used
- * by the src; unref it after usage.
- */
-GstBufferPool *
-gst_base_src_get_buffer_pool (MyBaseSrc * src)
-{
-  GstBufferPool *ret = NULL;
-
-  g_return_val_if_fail (GST_IS_MY_BASE_SRC (src), NULL);
-
-  GST_OBJECT_LOCK (src);
-  if (src->priv->pool)
-    ret = gst_object_ref (src->priv->pool);
-  GST_OBJECT_UNLOCK (src);
-
-  return ret;
-}
-
-/**
- * gst_base_src_get_allocator:
- * @src: a #MyBaseSrc
- * @allocator: (out) (allow-none) (transfer full): the #GstAllocator
- * used
- * @params: (out) (allow-none) (transfer full): the
- * #GstAllocationParams of @allocator
- *
- * Lets #MyBaseSrc sub-classes to know the memory @allocator
- * used by the base class and its @params.
- *
- * Unref the @allocator after usage.
- */
-void
-gst_base_src_get_allocator (MyBaseSrc * src,
-    GstAllocator ** allocator, GstAllocationParams * params)
-{
-  g_return_if_fail (GST_IS_MY_BASE_SRC (src));
-
-  GST_OBJECT_LOCK (src);
-  if (allocator)
-    *allocator = src->priv->allocator ?
-        gst_object_ref (src->priv->allocator) : NULL;
-
-  if (params)
-    *params = src->priv->params;
-  GST_OBJECT_UNLOCK (src);
-}
-
-/**
- * gst_base_src_submit_buffer_list:
- * @src: a #MyBaseSrc
- * @buffer_list: (transfer full): a #GstBufferList
- *
- * Subclasses can call this from their create virtual method implementation
- * to submit a buffer list to be pushed out later. This is useful in
- * cases where the create function wants to produce multiple buffers to be
- * pushed out in one go in form of a #GstBufferList, which can reduce overhead
- * drastically, especially for packetised inputs (for data streams where
- * the packetisation/chunking is not important it is usually more efficient
- * to return larger buffers instead).
- *
- * Subclasses that use this function from their create function must return
- * %GST_FLOW_OK and no buffer from their create virtual method implementation.
- * If a buffer is returned after a buffer list has also been submitted via this
- * function the behaviour is undefined.
- *
- * Subclasses must only call this function once per create function call and
- * subclasses must only call this function when the source operates in push
- * mode.
- *
- * Since: 1.14
- */
-void
-gst_base_src_submit_buffer_list (MyBaseSrc * src, GstBufferList * buffer_list)
-{
-  g_return_if_fail (GST_IS_MY_BASE_SRC (src));
-  g_return_if_fail (GST_IS_BUFFER_LIST (buffer_list));
-  g_return_if_fail (MY_BASE_SRC_HAS_PENDING_BUFFER_LIST (src) == FALSE);
-
-  src->priv->pending_bufferlist = buffer_list;
-
-  GST_LOG_OBJECT (src, "%u buffers submitted in buffer list",
-      gst_buffer_list_length (buffer_list));
-}

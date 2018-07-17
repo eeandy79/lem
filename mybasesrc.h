@@ -87,7 +87,6 @@ struct _MyBaseSrc {
   /* MT-protected (with LIVE_LOCK) */
   GMutex         live_lock;
   GCond          live_cond;
-  gboolean       is_live;
   gboolean       live_running;
 
   /* MT-protected (with LOCK) */
@@ -190,11 +189,7 @@ struct _MyBaseSrcClass {
   /* setup allocation query */
   gboolean      (*decide_allocation)   (MyBaseSrc *src, GstQuery *query);
 
-  /* start and stop processing, ideal for opening/closing the resource */
-  gboolean      (*start)        (MyBaseSrc *src);
-  gboolean      (*stop)         (MyBaseSrc *src);
-
-  /**
+    /**
    * MyBaseSrcClass::get_times:
    * @start: (out):
    * @end: (out):
@@ -253,12 +248,6 @@ GST_BASE_API
 GstFlowReturn   gst_base_src_wait_playing     (MyBaseSrc *src);
 
 GST_BASE_API
-void            gst_base_src_set_live         (MyBaseSrc *src, gboolean live);
-
-GST_BASE_API
-gboolean        gst_base_src_is_live          (MyBaseSrc *src);
-
-GST_BASE_API
 void            gst_base_src_set_format       (MyBaseSrc *src, GstFormat format);
 
 GST_BASE_API
@@ -280,10 +269,6 @@ GST_BASE_API
 GstFlowReturn   gst_base_src_start_wait       (MyBaseSrc * basesrc);
 
 GST_BASE_API
-gboolean        gst_base_src_query_latency    (MyBaseSrc *src, gboolean * live,
-                                               GstClockTime * min_latency,
-                                               GstClockTime * max_latency);
-GST_BASE_API
 void            gst_base_src_set_blocksize    (MyBaseSrc *src, guint blocksize);
 
 GST_BASE_API
@@ -300,18 +285,6 @@ gboolean        gst_base_src_new_seamless_segment (MyBaseSrc *src, gint64 start,
 
 GST_BASE_API
 gboolean        gst_base_src_set_caps         (MyBaseSrc *src, GstCaps *caps);
-
-GST_BASE_API
-GstBufferPool * gst_base_src_get_buffer_pool  (MyBaseSrc *src);
-
-GST_BASE_API
-void            gst_base_src_get_allocator    (MyBaseSrc *src,
-                                               GstAllocator **allocator,
-                                               GstAllocationParams *params);
-
-GST_BASE_API
-void            gst_base_src_submit_buffer_list (MyBaseSrc    * src,
-                                                 GstBufferList * buffer_list);
 
 
 #ifdef G_DEFINE_AUTOPTR_CLEANUP_FUNC
