@@ -14,19 +14,23 @@ GST_DEBUG_CATEGORY_STATIC (tfi_sdi_src_debug);
 
 #define _do_init \
     GST_DEBUG_CATEGORY_INIT (tfi_sdi_src_debug, "tfi_sdi_src", 0, "TFI SDI source plugin");
-G_DEFINE_TYPE_WITH_CODE (TfiSdiSrc, tfi_sdi_src, GST_TYPE_MY_BASE_SRC, _do_init);
+//G_DEFINE_TYPE_WITH_CODE (TfiSdiSrc, tfi_sdi_src, GST_TYPE_MY_BASE_SRC, _do_init);
+G_DEFINE_TYPE_WITH_CODE (TfiSdiSrc, tfi_sdi_src, GST_TYPE_ELEMENT, _do_init);
+
+static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE ("src%d",
+    GST_PAD_SRC,
+    GST_PAD_REQUEST,
+    GST_STATIC_CAPS_ANY);
 
 static void gst_sdi_src_set_property (GObject *object, guint prop_id, const GValue *value, GParamSpec *pspec);
 static void gst_sdi_src_get_property (GObject *object, guint prop_id, GValue *value, GParamSpec *pspec);
-static GstFlowReturn tfi_sdi_src_alloc (MyBaseSrc * src, guint64 offset, guint size, GstBuffer ** buffer);
-
+static GstFlowReturn tfi_sdi_src_alloc (TfiSdiSrc *src, guint64 offset, guint size, GstBuffer ** buffer);
 static GstFlowReturn create2 (GstPad *pad, GstBuffer ** buffer);
 static void* work (void *p);
 static void* workpad (void *p);
 static void ready (TfiSdiSrc *src);
-static GstPad *request_new_pad (GstElement *element, GstPadTemplate *template, const gchar *name, const GstCaps *caps);
-static GstStateChangeReturn gst_base_src_change_state (GstElement * element,
-    GstStateChange transition);
+static GstPad *request_new_pad (GstElement *element, GstPadTemplate *tp, const gchar *name, const GstCaps *caps);
+static GstStateChangeReturn gst_base_src_change_state (GstElement *element, GstStateChange transition);
 
 static GstPad *
 request_new_pad (GstElement *element, GstPadTemplate *template, const gchar *name, const GstCaps *caps)
@@ -62,13 +66,14 @@ tfi_sdi_src_class_init (TfiSdiSrcClass * klass)
     gobject_class->set_property = gst_sdi_src_set_property;
     gobject_class->get_property = gst_sdi_src_get_property;
 
+    gst_element_class_add_pad_template (gstelement_class, gst_static_pad_template_get (&src_template));
     gst_element_class_set_static_metadata (gstelement_class,
             "TFI SDI source", "Source/Video",
             "Integrate with Blackmagic SDI card", "Andy Chang <andy.chang@tfidm.com>");
 }
 
 static GstFlowReturn
-tfi_sdi_src_alloc (MyBaseSrc * src, guint64 offset, guint size, GstBuffer ** buffer)
+tfi_sdi_src_alloc (TfiSdiSrc* src, guint64 offset, guint size, GstBuffer ** buffer)
 {
     GstMemory *memory;
     *buffer = gst_buffer_new();
@@ -80,9 +85,7 @@ tfi_sdi_src_alloc (MyBaseSrc * src, guint64 offset, guint size, GstBuffer ** buf
 static void
 tfi_sdi_src_init (TfiSdiSrc *src)
 {
-    gst_base_src_set_format (GST_MY_BASE_SRC (src), GST_FORMAT_TIME);
     src->pad_counter = 0;
-
     g_queue_init(&src->pad_queue);
 }
 
@@ -100,7 +103,7 @@ static GstFlowReturn create2 (GstPad *pad, GstBuffer ** buffer)
 {
     GstFlowReturn ret;
     int blocksize = ((long int)pad) & 0x00ffffff;
-    MyBaseSrc *src = GST_MY_BASE_SRC (GST_OBJECT_PARENT (pad));
+    TfiSdiSrc *src = TFI_SDI_SRC(GST_OBJECT_PARENT (pad));
 
     ret = tfi_sdi_src_alloc (src, 0, blocksize, buffer);
 

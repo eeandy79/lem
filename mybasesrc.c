@@ -267,17 +267,16 @@ gst_base_src_init (MyBaseSrc * basesrc, gpointer g_class)
   g_cond_init (&basesrc->live_cond);
 
   basesrc->priv = gst_base_src_get_instance_private (basesrc);
-  basesrc->num_buffers = DEFAULT_NUM_BUFFERS;
-  basesrc->num_buffers_left = -1;
-  basesrc->priv->automatic_eos = TRUE;
-  basesrc->can_activate_push = TRUE;
-  basesrc->blocksize = DEFAULT_BLOCKSIZE;
-  basesrc->clock_id = NULL;
+  //basesrc->num_buffers = DEFAULT_NUM_BUFFERS;
+  //basesrc->num_buffers_left = -1;
+  //basesrc->priv->automatic_eos = TRUE;
+  //basesrc->can_activate_push = TRUE;
+  //basesrc->blocksize = DEFAULT_BLOCKSIZE;
+  //basesrc->clock_id = NULL;
 
   gst_element_class_add_pad_template (GST_ELEMENT_CLASS (g_class),
         gst_static_pad_template_get (&tee_src_template));
 
-  /* we operate in BYTES by default */
   gst_base_src_set_format (basesrc, GST_FORMAT_BYTES);
   basesrc->priv->do_timestamp = DEFAULT_DO_TIMESTAMP;
   g_atomic_int_set (&basesrc->priv->have_events, FALSE);
