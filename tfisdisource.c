@@ -18,17 +18,12 @@ G_DEFINE_TYPE_WITH_CODE (TfiSdiSrc, tfi_sdi_src, GST_TYPE_MY_BASE_SRC, _do_init)
 
 static void gst_sdi_src_set_property (GObject *object, guint prop_id, const GValue *value, GParamSpec *pspec);
 static void gst_sdi_src_get_property (GObject *object, guint prop_id, GValue *value, GParamSpec *pspec);
-static GstCaps *tfi_sdi_src_src_fixate (MyBaseSrc *bsrc, GstCaps *caps);
-static void tfi_sdi_src_get_times (MyBaseSrc *basesrc, GstBuffer *buffer, GstClockTime *start, GstClockTime *end);
-static gboolean tfi_sdi_src_decide_allocation (MyBaseSrc *bsrc, GstQuery *query);
-static GstFlowReturn tfi_sdi_src_fill (MyBaseSrc *bsrc, guint64 offset, guint length, GstBuffer * ret);
-static gboolean tfi_sdi_src_query (MyBaseSrc * src, GstQuery * query);
 static GstFlowReturn tfi_sdi_src_alloc (MyBaseSrc * src, guint64 offset, guint size, GstBuffer ** buffer);
 
 static GstFlowReturn create2 (GstPad *pad, GstBuffer ** buffer);
 static void* work (void *p);
 static void* workpad (void *p);
-static void ready (MyBaseSrc *basesrc);
+static void ready (TfiSdiSrc *src);
 static GstPad *request_new_pad (GstElement *element, GstPadTemplate *template, const gchar *name, const GstCaps *caps);
 static GstStateChangeReturn gst_base_src_change_state (GstElement * element,
     GstStateChange transition);
@@ -56,11 +51,9 @@ tfi_sdi_src_class_init (TfiSdiSrcClass * klass)
 {
     GObjectClass *gobject_class;
     GstElementClass *gstelement_class;
-    MyBaseSrcClass *gstbasesrc_class;
 
     gobject_class = (GObjectClass *) klass;
     gstelement_class = (GstElementClass *) klass;
-    gstbasesrc_class = (MyBaseSrcClass *) klass;
     parent_class = g_type_class_peek_parent (klass);
 
     gstelement_class->request_new_pad = request_new_pad;
@@ -72,21 +65,6 @@ tfi_sdi_src_class_init (TfiSdiSrcClass * klass)
     gst_element_class_set_static_metadata (gstelement_class,
             "TFI SDI source", "Source/Video",
             "Integrate with Blackmagic SDI card", "Andy Chang <andy.chang@tfidm.com>");
-
-    gstbasesrc_class->get_caps = NULL;
-    gstbasesrc_class->negotiate = NULL;
-    gstbasesrc_class->event = NULL;
-    gstbasesrc_class->alloc = tfi_sdi_src_alloc; // new test
-    gstbasesrc_class->decide_allocation = NULL;
-    gstbasesrc_class->create2 = create2;
-
-    gstbasesrc_class->fixate = tfi_sdi_src_src_fixate;
-    gstbasesrc_class->get_times = tfi_sdi_src_get_times;
-    gstbasesrc_class->decide_allocation = tfi_sdi_src_decide_allocation;
-    gstbasesrc_class->fill = tfi_sdi_src_fill;
-    gstbasesrc_class->query = tfi_sdi_src_query;
-
-    gstbasesrc_class->ready = ready;
 }
 
 static GstFlowReturn
@@ -108,12 +86,6 @@ tfi_sdi_src_init (TfiSdiSrc *src)
     g_queue_init(&src->pad_queue);
 }
 
-static GstCaps *
-tfi_sdi_src_src_fixate (MyBaseSrc *bsrc, GstCaps *caps)
-{
-    return NULL;
-}
-
 static void
 gst_sdi_src_set_property (GObject *object, guint prop_id, const GValue *value, GParamSpec *pspec)
 {
@@ -124,85 +96,14 @@ gst_sdi_src_get_property (GObject *object, guint prop_id, GValue *value, GParamS
 {
 }
 
-static gboolean
-tfi_sdi_src_decide_allocation (MyBaseSrc *bsrc, GstQuery *query)
-{
-    return TRUE;
-}
-
-static void
-tfi_sdi_src_get_times (MyBaseSrc *basesrc, GstBuffer *buffer, GstClockTime *start, GstClockTime *end)
-{
-    GstClockTime timestamp = GST_BUFFER_PTS (buffer);
-    if (GST_CLOCK_TIME_IS_VALID (timestamp)) {
-        GstClockTime duration = GST_BUFFER_DURATION (buffer);
-        if (GST_CLOCK_TIME_IS_VALID (duration)) {
-            *end = timestamp + duration;
-        }
-        *start = timestamp;
-    }
-}
-
-static GstFlowReturn
-tfi_sdi_src_fill (MyBaseSrc *bsrc, guint64 offset, guint length, GstBuffer *ret)
-{
-    return GST_FLOW_OK;
-}
-
-static gboolean 
-tfi_sdi_src_query (MyBaseSrc * src, GstQuery * query)
-{
-    gboolean res = FALSE;
-    switch (GST_QUERY_TYPE (query)) {
-        case GST_QUERY_CAPS:
-            {
-                MyBaseSrcClass *bclass;
-                GstCaps *caps, *filter;
-
-                bclass = GST_MY_BASE_SRC_GET_CLASS (src);
-                if (bclass->get_caps) {
-                    gst_query_parse_caps (query, &filter);
-                    if ((caps = bclass->get_caps (src, filter))) {
-                        gst_query_set_caps_result (query, caps);
-                        gst_caps_unref (caps);
-                        res = TRUE;
-                    } else {
-                        res = FALSE;
-                    }
-                } else
-                    res = FALSE;
-                break;
-            }
-        case GST_QUERY_POSITION:
-        case GST_QUERY_DURATION:
-        case GST_QUERY_LATENCY:
-        case GST_QUERY_JITTER:
-        case GST_QUERY_RATE:
-        case GST_QUERY_SEEKING:
-        case GST_QUERY_SEGMENT:
-        case GST_QUERY_CONVERT:
-        case GST_QUERY_FORMATS:
-        case GST_QUERY_BUFFERING:
-        case GST_QUERY_CUSTOM:
-        case GST_QUERY_URI:
-        case GST_QUERY_ALLOCATION:
-        case GST_QUERY_SCHEDULING:
-        case GST_QUERY_ACCEPT_CAPS:
-        case GST_QUERY_DRAIN:
-        case GST_QUERY_CONTEXT:
-        case GST_QUERY_UNKNOWN:
-            res = FALSE;
-    }
-    return res;
-}
-
 static GstFlowReturn create2 (GstPad *pad, GstBuffer ** buffer)
 {
     GstFlowReturn ret;
     int blocksize = ((long int)pad) & 0x00ffffff;
     MyBaseSrc *src = GST_MY_BASE_SRC (GST_OBJECT_PARENT (pad));
-    MyBaseSrcClass *bclass = GST_MY_BASE_SRC_GET_CLASS (src);
-    ret = bclass->create(src, 0, blocksize, buffer);
+
+    ret = tfi_sdi_src_alloc (src, 0, blocksize, buffer);
+
     GST_BUFFER_PTS (*buffer) = 10;
     GST_BUFFER_DTS (*buffer) = 11;
     g_print("%p:%d\n", pad, blocksize);
@@ -236,16 +137,14 @@ static void* work (void *p) {
     return NULL;
 }
 
-static void ready (MyBaseSrc *basesrc) {
-    TfiSdiSrc *src = (TfiSdiSrc*)basesrc;
-    src->datathread = g_thread_new("datathread", &work, basesrc);
+static void ready (TfiSdiSrc *src) {
+    src->datathread = g_thread_new("datathread", &work, src);
 }
 
 static GstStateChangeReturn
 gst_base_src_change_state (GstElement * element, GstStateChange transition)
 {
-    MyBaseSrc *basesrc = GST_MY_BASE_SRC (element);
-    MyBaseSrcClass *bclass = GST_MY_BASE_SRC_GET_CLASS (basesrc);
+    TfiSdiSrc *src = TFI_SDI_SRC (element);
     GstStateChangeReturn result;
     gboolean no_preroll = FALSE;
 
@@ -259,7 +158,7 @@ gst_base_src_change_state (GstElement * element, GstStateChange transition)
             break;
         case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
             g_print("TFI:GST_STATE_CHANGE_PAUSED_TO_PLAYING\n");
-            bclass->ready(basesrc);
+            ready(src);
             break;
         default:
             break;
@@ -288,7 +187,6 @@ gst_base_src_change_state (GstElement * element, GstStateChange transition)
 
 failure:
     {
-        GST_DEBUG_OBJECT (basesrc, "parent failed state change");
         return result;
     }
 }
