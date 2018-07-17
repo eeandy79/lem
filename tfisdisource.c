@@ -7,6 +7,8 @@
 #include <stdlib.h>
 #include <unistd.h>
 
+#include "capture.h"
+
 static GstElementClass *parent_class = NULL;
 GST_DEBUG_CATEGORY_STATIC (tfi_sdi_src_debug);
 #define GST_CAT_DEFAULT tfi_sdi_src_debug
@@ -33,14 +35,14 @@ static GstPad *request_new_pad (GstElement *element, GstPadTemplate *tp, const g
 static GstStateChangeReturn gst_base_src_change_state (GstElement *element, GstStateChange transition);
 
 static GstPad *
-request_new_pad (GstElement *element, GstPadTemplate *template, const gchar *name, const GstCaps *caps)
+request_new_pad (GstElement *element, GstPadTemplate *tp, const gchar *name, const GstCaps *caps)
 {
     gchar *pad_name;
     GstPad *pad;
     TfiSdiSrc *src = (TfiSdiSrc*)element;
     
     pad_name = g_strdup_printf ("src%d", src->pad_counter++);
-    pad = gst_pad_new_from_template (template, pad_name);
+    pad = gst_pad_new_from_template (tp, pad_name);
     g_free(pad_name);
 
     gst_element_add_pad (GST_ELEMENT (src), pad);
@@ -58,7 +60,7 @@ tfi_sdi_src_class_init (TfiSdiSrcClass * klass)
 
     gobject_class = (GObjectClass *) klass;
     gstelement_class = (GstElementClass *) klass;
-    parent_class = g_type_class_peek_parent (klass);
+    parent_class = (GstElementClass*)g_type_class_peek_parent (klass);
 
     gstelement_class->request_new_pad = request_new_pad;
     gstelement_class->change_state = gst_base_src_change_state;
@@ -132,7 +134,7 @@ static void* work (void *p) {
         gint i;
         gint length = g_queue_get_length(&basesrc->pad_queue);
         for (i = 0; i < length; i++) {
-            GstPad *pad = g_queue_peek_nth (&basesrc->pad_queue, i);
+            GstPad *pad = (GstPad*)g_queue_peek_nth (&basesrc->pad_queue, i);
             g_thread_new("padthread", &workpad, pad);
         }
         sleep(1);
@@ -141,7 +143,8 @@ static void* work (void *p) {
 }
 
 static void ready (TfiSdiSrc *src) {
-    src->datathread = g_thread_new("datathread", &work, src);
+    //src->datathread = g_thread_new("datathread", &work, src);
+    rundecklink();
 }
 
 static GstStateChangeReturn
@@ -195,6 +198,7 @@ failure:
 }
 
 
+/*
 static gboolean
 plugin_init (GstPlugin *plugin)
 {
@@ -210,3 +214,4 @@ GST_PLUGIN_DEFINE (
         "TFI SDI source plugin",
         plugin_init, VERSION, "LGPL", "TFI", "http://www.tfidm.com/"
         )
+        */
