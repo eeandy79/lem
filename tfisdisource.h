@@ -2,6 +2,7 @@
 #define __GST_TFI_SDI_SRC_H__
 
 #include <gst/gst.h>
+#include "linux/DeckLinkAPI.h"
 
 G_BEGIN_DECLS
 
@@ -18,6 +19,18 @@ struct _TfiSdiSrc {
     gboolean running;
     gint pad_counter;
     GQueue pad_queue;
+
+    IDeckLinkInput *deckLinkInput = NULL;
+	IDeckLinkDisplayMode *displayMode = NULL;
+    //IDeckLinkInputCallback *cb = NULL;
+
+    GstClock *clock;
+    GstClockTime clock_start_time, clock_last_time, clock_epoch;
+    GstClockTimeDiff clock_offset;
+
+    /* Everything below protected by mutex */
+    GMutex lock;
+    GCond cond;
 };
 
 struct _TfiSdiSrcClass {
