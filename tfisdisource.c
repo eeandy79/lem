@@ -32,7 +32,14 @@ static GstStaticPadTemplate src_template = GST_STATIC_PAD_TEMPLATE ("src%d",
 static GstStaticPadTemplate video_template = GST_STATIC_PAD_TEMPLATE ("video",
     GST_PAD_SRC,
     GST_PAD_ALWAYS,
-    GST_STATIC_CAPS ("video/x-raw,format=UYVY,width=1920,height=1080,framerate=25/1"));
+    GST_STATIC_CAPS 
+    ("video/x-raw,format=UYVY,width=1920,height=1080,framerate=25/1"));
+
+static GstStaticPadTemplate audio_template = GST_STATIC_PAD_TEMPLATE ("audio",
+        GST_PAD_SRC,
+        GST_PAD_ALWAYS,
+        GST_STATIC_CAPS
+        ("audio/x-raw, format={S16LE,S32LE}, channels=2, rate=48000, layout=interleaved"));
 
 
 static void gst_sdi_src_set_property (GObject *object, guint prop_id, const GValue *value, GParamSpec *pspec);
@@ -47,6 +54,9 @@ static GstPad *request_new_pad (GstElement *element, GstPadTemplate *tp, const g
 static GstStateChangeReturn gst_base_src_change_state (GstElement *element, GstStateChange transition);
 static GstClock *gst_tfi_sdi_src_provide_clock (GstElement * element);
 static GstClockTime tfi_decklink_clock_get_internal_time (GstClock * clock);
+
+static gboolean gst_base_src_query (GstPad * pad, GstObject * parent,
+            GstQuery * query);
 
 #define GST_TYPE_TFI_DECKLINK_CLOCK \
       (tfi_decklink_clock_get_type())
@@ -80,6 +90,7 @@ static GstClock *tfi_decklink_clock_new (const gchar * name);
 
 
 
+/*
 static GstPad *
 request_new_pad (GstElement *element, GstPadTemplate *tp, const gchar *name, const GstCaps *caps)
 {
@@ -109,6 +120,7 @@ request_new_pad (GstElement *element, GstPadTemplate *tp, const gchar *name, con
 
     return pad;
 }
+*/
 
 
 static void
@@ -130,10 +142,19 @@ tfi_sdi_src_class_init (TfiSdiSrcClass * klass)
 
     gst_element_class_add_pad_template (gstelement_class, gst_static_pad_template_get (&src_template));
     gst_element_class_add_pad_template (gstelement_class, gst_static_pad_template_get (&video_template));
+    gst_element_class_add_pad_template (gstelement_class, gst_static_pad_template_get (&audio_template));
     gst_element_class_set_static_metadata (gstelement_class,
             "TFI SDI source", "Source/Video",
             "Integrate with Blackmagic SDI card", "Andy Chang <andy.chang@tfidm.com>");
 }
+
+static GstCaps*
+gst_decklink_audio_src_get_caps (TfiSdiSrc* bsrc, GstCaps * filter) {
+    printf("need caps\n");
+    exit(0);
+    return NULL;
+}
+
 
 static GstFlowReturn
 tfi_sdi_src_alloc (TfiSdiSrc* src, guint64 offset, guint size, GstBuffer ** buffer)
@@ -148,12 +169,14 @@ tfi_sdi_src_alloc (TfiSdiSrc* src, guint64 offset, guint size, GstBuffer ** buff
 static void
 tfi_sdi_src_init (TfiSdiSrc *src)
 {
-    GstPad *pad;
+    //GstPad *pad;
     src->pad_counter = 0;
     src->running = FALSE;
-    g_queue_init(&src->pad_queue);
+    //g_queue_init(&src->pad_queue);
 
-    pad = gst_pad_new_from_static_template(&video_template, "video");
+    src->video_pad = gst_pad_new_from_static_template(&video_template, "video");
+    src->audio_pad = gst_pad_new_from_static_template(&audio_template, "audio");
+
 
     /*
     GstCaps *caps2 = gst_caps_new_simple ("video/x-raw",
@@ -167,8 +190,13 @@ tfi_sdi_src_init (TfiSdiSrc *src)
         exit(0);
     }
     */
-    gst_element_add_pad (GST_ELEMENT (src), pad);
-    g_queue_push_tail(&src->pad_queue, pad);
+    gst_pad_set_query_function (src->video_pad, gst_base_src_query);
+    gst_pad_set_query_function (src->audio_pad, gst_base_src_query);
+
+    gst_element_add_pad (GST_ELEMENT (src), src->video_pad);
+    gst_element_add_pad (GST_ELEMENT (src), src->audio_pad);
+
+    //g_queue_push_tail(&src->pad_queue, pad);
 
 
     TfiDecklinkClock *clk = (TfiDecklinkClock*)tfi_decklink_clock_new ("TfiDecklinkClock");
@@ -187,6 +215,7 @@ gst_sdi_src_get_property (GObject *object, guint prop_id, GValue *value, GParamS
 {
 }
 
+/*
 static GstFlowReturn create2 (GstPad *pad, GstBuffer ** buffer)
 {
     GstFlowReturn ret;
@@ -227,6 +256,7 @@ static void* work (void *p) {
     }
     return NULL;
 }
+*/
 
 typedef struct
 {
@@ -241,6 +271,43 @@ video_frame_free (void *data)
     g_free(frame);
 }
 
+typedef struct
+{
+    IDeckLinkAudioInputPacket *packet;
+} AudioPacket;
+
+static void
+audio_packet_free (void *data)
+{
+    AudioPacket *packet = (AudioPacket *) data;
+    packet->packet->Release ();
+    g_free(packet);
+}
+
+typedef struct
+{
+    GstPad * pad;
+    GAsyncQueue *q;
+} Context;
+
+static void* workPad(void* p) 
+{
+    Context *context = (Context*)p;
+    while(1) {
+        gpointer buf = NULL;
+        gint size = g_async_queue_length(context->q);
+        //printf("hello:%p | size:%d\n", context->pad, size);
+
+        buf = g_async_queue_try_pop(context->q);
+        if (buf) {
+            gst_pad_push(context->pad, (GstBuffer*)buf);
+        } else {
+            sleep(0.01);
+        }
+    }
+}
+
+
 class InputCallback : public IDeckLinkInputCallback
 {
     private:
@@ -251,16 +318,25 @@ class InputCallback : public IDeckLinkInputCallback
         IDeckLinkDisplayMode* m_displayMode;
         BMDConfig m_config;
         uint64_t m_pts;
-    public:
-        GstPad *m_pad;
+        bool m_bSetupVideo;
+        bool m_bSetupAudio;
+    private:
+        //GstPad *m_pad;
+        GstPad *m_videoPad;
+        GstPad *m_audioPad;
+
+        Context m_videoContext;
+        Context m_audioContext;
 
     public:
         InputCallback(IDeckLinkInput *deckLinkInput, IDeckLinkDisplayMode *displayMode, const BMDConfig &config)
             :m_refCount(0),m_frameCnt(0),m_deckLinkInput(deckLinkInput), 
             m_displayMode(displayMode), m_config(config), m_pts(0) 
-    {
-    }
+        {
+            m_bSetupVideo = false;
+            m_bSetupAudio = false;
 
+        }
 
         virtual HRESULT STDMETHODCALLTYPE QueryInterface (REFIID, LPVOID *)
         {
@@ -281,6 +357,18 @@ class InputCallback : public IDeckLinkInputCallback
                 return 0;
             }
             return newRefValue;
+        }
+
+        void setPads(GstPad *vP, GstPad *aP) {
+            m_videoPad = vP;
+            m_audioPad = aP;
+            m_videoContext.pad = vP;
+            m_audioContext.pad = aP;
+            m_videoContext.q = g_async_queue_new();
+            m_audioContext.q = g_async_queue_new();
+
+            gst_pad_start_task(m_videoPad, (GstTaskFunction)workPad, &m_videoContext, NULL);
+            gst_pad_start_task(m_audioPad, (GstTaskFunction)workPad, &m_audioContext, NULL);
         }
 
         virtual HRESULT STDMETHODCALLTYPE
@@ -304,11 +392,23 @@ class InputCallback : public IDeckLinkInputCallback
                                 "height", G_TYPE_INT, mode->GetHeight(), 
                                 NULL);
 
-                if (gst_pad_set_caps(m_pad, caps) == FALSE) {
-                    printf("Fail to set caps\n");
+                if (gst_pad_set_caps(m_videoPad, caps) == FALSE) {
+                    printf("Fail to set video caps\n");
                     exit(0);
                 }
 
+                /*
+                GstCaps *audio_caps = gst_caps_new_simple ("audio/x-raw",
+                                "format", G_TYPE_STRING, "S16LE",
+                                "channels", G_TYPE_INT, 2,
+                                "rate", G_TYPE_INT, 48000,
+                                NULL);
+
+                if (gst_pad_set_caps(m_audioPad, audio_caps) == FALSE) {
+                    printf("Fail to set audio caps\n");
+                    exit(0);
+                }
+                */
 
                 if (displayModeName)
                     free(displayModeName);
@@ -318,6 +418,11 @@ class InputCallback : public IDeckLinkInputCallback
                     m_deckLinkInput->StopStreams();
                     result = m_deckLinkInput->EnableVideoInput(
                             mode->GetDisplayMode(), pixelFormat, m_config.m_inputFlags);
+
+                    result = m_deckLinkInput->EnableAudioInput(
+                            bmdAudioSampleRate48kHz,
+                            bmdAudioSampleType16bitInteger, 2);
+
                     if (result != S_OK) {
                         fprintf(stderr, "Failed to switch video mode\n");
                     } else {
@@ -349,13 +454,6 @@ class InputCallback : public IDeckLinkInputCallback
 
                         video_frame->GetStreamTime (&stream_time, &stream_duration, GST_SECOND);
 
-                        /*
-                        printf("GotFrame(#%d): %dx%d size=%d\n", m_frameCnt, m_width, m_height, m_bufSize);
-                        printf("\tframe:%ldx%ld | rowbytes:%ld | format:0x%x\n",
-                                video_frame->GetWidth(), video_frame->GetHeight(),
-                                video_frame->GetRowBytes(), video_frame->GetPixelFormat());
-                                */
-
                         video_frame->GetBytes(&buf);
                         VideoFrame *vf = (VideoFrame *) g_malloc0 (sizeof (VideoFrame));
 
@@ -370,20 +468,19 @@ class InputCallback : public IDeckLinkInputCallback
                         vf->frame = video_frame;
                         vf->frame->AddRef();
 
-                        if (m_frameCnt == 1) {
+                        if (!m_bSetupVideo) {
                             printf("\n\n\t\tsetting segment to pad\n");
                             GstSegment *segment = gst_segment_new();
                             gst_segment_init(segment, GST_FORMAT_TIME);
                             segment->base = basetime;
-                            //segment.format = GST_FORMAT_TIME;
-                            //segment.stop = -1;
-                            //segment.start = 0;
-                            //segment.rate = 1.0;
-                            gst_pad_push_event (m_pad, gst_event_new_segment (segment));
+                            gst_pad_push_event (m_videoPad, gst_event_new_segment (segment));
                             gst_segment_free(segment);
+                            m_bSetupVideo = true;
                         }
 
-                        gst_pad_push(m_pad, buffer);
+                        g_async_queue_push (m_videoContext.q, buffer);
+
+                        //gst_pad_push(m_videoPad, buffer);
                         buffer = NULL;
                     }
                     m_frameCnt++;
@@ -391,13 +488,43 @@ class InputCallback : public IDeckLinkInputCallback
 
                 if (audio_packet)
                 {
-                    /*
-                       if (g_audioOutputFile != -1)
-                       {
-                       audio_frame->GetBytes(&audio_frameBytes);
-                       write(g_audioOutputFile, audio_frameBytes, audio_frame->GetSampleFrameCount() * g_config.m_audioChannels * (g_config.m_audioSampleDepth / 8));
-                       }
-                       */
+                    GstBuffer *buffer = NULL;
+                    int32_t sample_count = audio_packet->GetSampleFrameCount();
+                    BMDTimeValue stream_time = GST_CLOCK_TIME_NONE;
+                    BMDTimeValue stream_duration = GST_CLOCK_TIME_NONE; 
+                    void* buf;
+                    int32_t bufsize = sample_count * 2 * 2;
+                    audio_packet->GetBytes(&buf);
+                    AudioPacket *ap = (AudioPacket *) g_malloc0 (sizeof (AudioPacket));
+
+                    video_frame->GetStreamTime (&stream_time, &stream_duration, GST_SECOND);
+
+                    buffer = gst_buffer_new_wrapped_full ((GstMemoryFlags) GST_MEMORY_FLAG_READONLY,
+                            (gpointer) buf, bufsize, 0, bufsize, ap,
+                            (GDestroyNotify) audio_packet_free);
+
+                    ap->packet = audio_packet;
+                    ap->packet->AddRef();
+
+                    GST_BUFFER_PTS(buffer) = stream_time;
+                    GST_BUFFER_DURATION(buffer) = stream_duration;
+                    //GST_BUFFER_OFFSET(buffer) = 0;
+                    //GST_BUFFER_OFFSET_END(buffer) = sample_count;
+
+                    if (!m_bSetupAudio) {
+                        printf("\n\n\t\tsetting segment to audio pad\n");
+                        GstSegment *segment = gst_segment_new();
+                        gst_segment_init(segment, GST_FORMAT_TIME);
+                        segment->base = basetime;
+                        gst_pad_push_event (m_audioPad, gst_event_new_segment (segment));
+                        gst_segment_free(segment);
+                        m_bSetupAudio = true;
+
+                    }
+
+                    g_async_queue_push (m_audioContext.q, buffer);
+                    //gst_pad_push(m_audioPad, buffer);
+                    buffer = NULL;
                 }
 
                 return S_OK;
@@ -578,6 +705,65 @@ static bool start(TfiSdiSrc *src) {
     config.DisplayConfiguration();
 
     cb = new InputCallback(src->deckLinkInput, src->displayMode, config);
+    cb->setPads(src->video_pad, src->audio_pad);
+
+    {
+        GstCaps *caps = NULL;
+        GstEvent *event = gst_event_new_stream_start ("test");
+        gboolean ret = gst_pad_push_event (src->audio_pad, event);
+
+        GstCaps *thiscaps = gst_pad_query_caps (src->audio_pad, NULL);
+        GST_DEBUG_OBJECT (src, "caps of src: %" GST_PTR_FORMAT, thiscaps);
+        if (thiscaps == NULL || gst_caps_is_any (thiscaps))
+        {
+            printf("fuck\n");
+            exit(0);
+        }
+
+        if (G_UNLIKELY (gst_caps_is_empty (thiscaps)))
+        {
+            printf("fuck2\n");
+            exit(0);
+        }
+
+        GstCaps *peercaps = gst_pad_peer_query_caps (src->audio_pad, thiscaps);
+        GST_DEBUG_OBJECT (src, "caps of peer: %" GST_PTR_FORMAT, peercaps);
+        if (peercaps) {
+            caps = peercaps;
+            gst_caps_unref (thiscaps);
+        } else {
+            caps = thiscaps;
+        }
+
+        if (caps && !gst_caps_is_empty (caps)) {
+            GST_DEBUG_OBJECT (src, "have caps: %" GST_PTR_FORMAT, caps);
+            if (gst_caps_is_any (caps)) {
+                GST_DEBUG_OBJECT (src, "any caps, we stop");
+                result = TRUE;
+            } else {
+                gst_caps_fixate(caps);
+                if (gst_caps_is_fixed (caps)) {
+                    gst_pad_push_event (src->audio_pad, gst_event_new_caps (caps));
+                }
+            }
+            gst_caps_unref (caps);
+        } else {
+            if (caps)
+                gst_caps_unref (caps);
+            GST_DEBUG_OBJECT (src, "no common caps");
+        }
+
+
+        caps = gst_pad_get_current_caps (src->audio_pad);
+        GstQuery *query = gst_query_new_allocation (caps, TRUE);
+        if (!gst_pad_peer_query (src->audio_pad, query)) {
+            g_print("peer query fail\n");
+        }
+    }
+
+
+
+    /*
     {
         gint i;
         gint length = g_queue_get_length(&src->pad_queue);
@@ -587,17 +773,21 @@ static bool start(TfiSdiSrc *src) {
             break;
         }
     }
+    */
 	src->deckLinkInput->SetCallback(cb); // deckLinkInput take the callback obj ownership
 
     src->running = TRUE;
 
-    gst_element_post_message (GST_ELEMENT_CAST (src),
-        gst_message_new_latency (GST_OBJECT_CAST (src)));
+    gst_element_post_message (GST_ELEMENT_CAST (src), gst_message_new_latency (GST_OBJECT_CAST (src)));
 
-    //rundecklink(deckLinkInput, displayMode, config);
     // Start capturing
     result = src->deckLinkInput->EnableVideoInput(src->displayMode->GetDisplayMode(), 
             config.m_pixelFormat, config.m_inputFlags);
+
+    result = src->deckLinkInput->EnableAudioInput(bmdAudioSampleRate48kHz,
+                  bmdAudioSampleType16bitInteger, 2);
+
+
     if (result != S_OK) {
         fprintf(stderr, "Failed to enable video input. Is another application using the card?\n");
         goto fail;
@@ -777,6 +967,41 @@ static GstClock *gst_tfi_sdi_src_provide_clock (GstElement * element)
     return GST_CLOCK_CAST (gst_object_ref (self->clock));
 }
 
+static gboolean
+gst_base_src_query (GstPad * pad, GstObject * parent, GstQuery * query)
+{
+    printf("query:%s\n", GST_QUERY_TYPE_NAME(query));
+    /*
+    GstCaps *caps = gst_pad_get_current_caps(pad);
+    gst_query_set_caps_result (query, caps);
+    gst_caps_unref (caps);
+    */
+    switch (GST_QUERY_TYPE (query)) {
+        case GST_QUERY_CAPS:
+            {
+                GstCaps *t = gst_pad_get_pad_template_caps(pad);
+                printf("%s\n", gst_caps_to_string(t));
+                gst_query_set_caps_result(query, t);
+            }
+            break;
+        case GST_QUERY_LATENCY:
+            {
+                GstClockTime min = gst_util_uint64_scale_ceil (GST_SECOND, 25, 1);
+                GstClockTime max = min * 5;
+                gst_query_set_latency(query, TRUE, 0, 0);
+            }
+            break;
+        case GST_QUERY_DURATION:
+            {
+                GstFormat format;
+                gst_query_parse_duration (query, &format, NULL);
+                GST_DEBUG_OBJECT (parent, "duration query in format %s", gst_format_get_name (format));
+                gst_query_set_duration (query, format, -1);
+            }
+            break;
+    }
+    return true;
+}
 /*
    static gboolean
    plugin_init (GstPlugin *plugin)

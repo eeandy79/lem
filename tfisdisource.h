@@ -18,7 +18,10 @@ struct _TfiSdiSrc {
     GThread *datathread;
     gboolean running;
     gint pad_counter;
-    GQueue pad_queue;
+    //GQueue pad_queue;
+
+    GstPad *video_pad;
+    GstPad *audio_pad;
 
     IDeckLinkInput *deckLinkInput = NULL;
 	IDeckLinkDisplayMode *displayMode = NULL;
