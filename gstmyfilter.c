@@ -227,6 +227,7 @@ gst_my_filter_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
 
   //exit(0);
   //
+  /*
   {
       GstQuery *query = gst_query_new_latency();
       gboolean live = FALSE;
@@ -249,10 +250,7 @@ gst_my_filter_chain (GstPad * pad, GstObject * parent, GstBuffer * buf)
       }
 
   }
-
-
-
-
+  */
   /* just push out the incoming buffer without touching it */
   return gst_pad_push (filter->srcpad, buf);
 }

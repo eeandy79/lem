@@ -34,6 +34,8 @@ struct _TfiSdiSrc {
     /* Everything below protected by mutex */
     GMutex lock;
     GCond cond;
+
+    gint bitrate;
 };
 
 struct _TfiSdiSrcClass {

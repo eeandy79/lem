@@ -11,8 +11,12 @@
 
 #include "decklinkconfig.h"
 
+#define LOG_HDL stdout
+//#define LOG_HDL fout
+
 static GstClock *testclock;
 static GstClockTime basetime;
+static FILE* fout;
 
 static GstElementClass *parent_class = NULL;
 GST_DEBUG_CATEGORY_STATIC (tfi_sdi_src_debug);
@@ -43,8 +47,6 @@ static GstStaticPadTemplate audio_template = GST_STATIC_PAD_TEMPLATE ("audio",
         ("audio/x-raw, format={S16LE}, channels=2, rate=48000, layout=interleaved"));
 
 
-static void gst_sdi_src_set_property (GObject *object, guint prop_id, const GValue *value, GParamSpec *pspec);
-static void gst_sdi_src_get_property (GObject *object, guint prop_id, GValue *value, GParamSpec *pspec);
 static GstFlowReturn tfi_sdi_src_alloc (TfiSdiSrc *src, guint64 offset, guint size, GstBuffer ** buffer);
 static GstFlowReturn create2 (GstPad *pad, GstBuffer ** buffer);
 static void* work (void *p);
@@ -70,6 +72,45 @@ static gboolean gst_stream_event (GstPad * pad, GstObject * parent, GstEvent * e
       (G_TYPE_CHECK_CLASS_TYPE((klass),GST_TYPE_TFI_DECKLINK_CLOCK))
 #define GST_DECKLINK_CLOCK_CAST(obj) \
       ((TfiDecklinkClock*)(obj))
+
+
+enum
+{
+    PROP_0,
+    PROP_BITRATE
+};
+
+static void
+tfidecklinksrc_set_property(GObject * object, guint prop_id,
+        const GValue * value, GParamSpec * pspec)
+{
+    TfiSdiSrc *self = (TfiSdiSrc*)(object);
+    switch (prop_id) {
+        case PROP_BITRATE:
+            self->bitrate = g_value_get_int (value);
+            break;
+        default:
+            G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+            break;
+    }
+    return;
+}
+
+static void
+tfidecklinksrc_get_property (GObject * object, guint prop_id,
+        GValue * value, GParamSpec * pspec)
+{
+    TfiSdiSrc *self = (TfiSdiSrc*)(object);
+    switch (prop_id) {
+        case PROP_BITRATE:
+            g_value_set_int (value, self->bitrate);
+            break;
+        default:
+            G_OBJECT_WARN_INVALID_PROPERTY_ID (object, prop_id, pspec);
+            break;
+    }
+    return;
+}
 
 typedef struct _TfiDecklinkClock TfiDecklinkClock;
 typedef struct _TfiDecklinkClockClass TfiDecklinkClockClass;
@@ -137,8 +178,8 @@ tfi_sdi_src_class_init (TfiSdiSrcClass * klass)
     gstelement_class->change_state = gst_base_src_change_state;
     gstelement_class->provide_clock = gst_tfi_sdi_src_provide_clock;
 
-    gobject_class->set_property = gst_sdi_src_set_property;
-    gobject_class->get_property = gst_sdi_src_get_property;
+    gobject_class->set_property = tfidecklinksrc_set_property;
+    gobject_class->get_property = tfidecklinksrc_get_property;
 
     gst_element_class_add_pad_template (gstelement_class, gst_static_pad_template_get (&src_template));
     gst_element_class_add_pad_template (gstelement_class, gst_static_pad_template_get (&video_template));
@@ -146,6 +187,14 @@ tfi_sdi_src_class_init (TfiSdiSrcClass * klass)
     gst_element_class_set_static_metadata (gstelement_class,
             "TFI SDI source", "Source/Video",
             "Integrate with Blackmagic SDI card", "Andy Chang <andy.chang@tfidm.com>");
+
+    g_object_class_install_property (gobject_class, PROP_BITRATE,
+            g_param_spec_int ("bitrate",
+                "Bitrate",
+                "Target test Bitrate (0 = fixed value based on "
+                " sample rate and channel count)",
+                0, G_MAXINT, 1000000,
+                GParamFlags(G_PARAM_READWRITE | G_PARAM_STATIC_STRINGS)));
 }
 
 static GstCaps*
@@ -199,6 +248,9 @@ tfi_sdi_src_init (TfiSdiSrc *src)
     gst_element_add_pad (GST_ELEMENT (src), src->video_pad);
     gst_element_add_pad (GST_ELEMENT (src), src->audio_pad);
 
+    src->bitrate = 12345;
+	fout = fopen("sdi.log", "wt");
+
     //g_queue_push_tail(&src->pad_queue, pad);
 
 
@@ -206,16 +258,6 @@ tfi_sdi_src_init (TfiSdiSrc *src)
     clk->input = src;
     src->clock = (GstClock*)clk;
 
-}
-
-static void
-gst_sdi_src_set_property (GObject *object, guint prop_id, const GValue *value, GParamSpec *pspec)
-{
-}
-
-static void
-gst_sdi_src_get_property (GObject *object, guint prop_id, GValue *value, GParamSpec *pspec)
-{
 }
 
 /*
@@ -387,7 +429,7 @@ class InputCallback : public IDeckLinkInputCallback
                 BMDPixelFormat	pixelFormat = bmdFormat8BitYUV;
 
                 mode->GetName((const char**)&displayModeName);
-                printf("Video format changed to %s %s | %ldx%ld\n",
+                fprintf(LOG_HDL, "Video format changed to %s %s | %ldx%ld\n",
                         displayModeName, formatFlags & bmdDetectedVideoInputRGB444 ? "RGB" : "YUV",
                         mode->GetWidth(), mode->GetHeight());
 
@@ -451,7 +493,7 @@ class InputCallback : public IDeckLinkInputCallback
 
                 if (video_frame) {
                     if (!bGoodVideoFrm) {
-                        printf("GotFrame(#%d): No input signal detected\n", m_frameCnt);
+                        fprintf(LOG_HDL, "GotFrame(#%d): No input signal detected\n", m_frameCnt);
                     }
                     else {
                         GstBuffer *buffer = NULL;
@@ -481,7 +523,7 @@ class InputCallback : public IDeckLinkInputCallback
                         vf->frame->AddRef();
 
                         if (!m_bSetupVideo) {
-                            printf("\n\n\t\tsetting segment to pad\n");
+                            fprintf(LOG_HDL, "\n\n\t\tsetting segment to pad\n");
                             GstSegment *segment = gst_segment_new();
                             gst_segment_init(segment, GST_FORMAT_TIME);
                             segment->base = basetime;
@@ -526,7 +568,7 @@ class InputCallback : public IDeckLinkInputCallback
                     //GST_BUFFER_OFFSET_END(buffer) = sample_count;
 
                     if (!m_bSetupAudio) {
-                        printf("\n\n\t\tsetting segment to audio pad\n");
+                        fprintf(LOG_HDL, "\n\n\t\tsetting segment to audio pad\n");
                         GstSegment *segment = gst_segment_new();
                         gst_segment_init(segment, GST_FORMAT_TIME);
                         segment->base = basetime;
@@ -545,6 +587,7 @@ class InputCallback : public IDeckLinkInputCallback
                     buffer = NULL;
                 }
 
+				fflush(fout);
                 return S_OK;
             }
 
@@ -842,6 +885,8 @@ static void stop (TfiSdiSrc *src)
 	if (src->displayMode != NULL) {
 		src->displayMode->Release();
     }
+
+	fflush(fout);
 }
 
 static GstStateChangeReturn
@@ -853,7 +898,7 @@ gst_base_src_change_state (GstElement * element, GstStateChange transition)
 
     switch (transition) {
         case GST_STATE_CHANGE_NULL_TO_READY:
-            g_print("TFI:GST_STATE_CHANGE_NULL_TO_READY\n");
+            fprintf(LOG_HDL, "TFI:GST_STATE_CHANGE_NULL_TO_READY\n");
             g_mutex_lock (&src->lock);
             src->clock_start_time = GST_CLOCK_TIME_NONE;
             src->clock_epoch += src->clock_last_time;
@@ -865,11 +910,11 @@ gst_base_src_change_state (GstElement * element, GstStateChange transition)
                         src->clock, TRUE));
             break;
         case GST_STATE_CHANGE_READY_TO_PAUSED:
-            g_print("TFI:GST_STATE_CHANGE_READY_TO_PAUSED\n");
+            fprintf(LOG_HDL, "TFI:GST_STATE_CHANGE_READY_TO_PAUSED\n");
             no_preroll = TRUE;
             break;
         case GST_STATE_CHANGE_PAUSED_TO_PLAYING:
-            g_print("TFI:GST_STATE_CHANGE_PAUSED_TO_PLAYING\n");
+            fprintf(LOG_HDL, "TFI:GST_STATE_CHANGE_PAUSED_TO_PLAYING\n");
             if (!start(src)) {
                 g_print("Fail to start capturing\n");
             }
@@ -877,6 +922,8 @@ gst_base_src_change_state (GstElement * element, GstStateChange transition)
         default:
             break;
     }
+
+	fflush(fout);
 
     if ((result = GST_ELEMENT_CLASS (parent_class)->change_state (element, transition)) 
             == GST_STATE_CHANGE_FAILURE)
@@ -993,7 +1040,7 @@ gst_stream_event (GstPad * pad, GstObject * parent, GstEvent * event) {
             {
                 GstClockTime latency;
                 gst_event_parse_latency (event, &latency);
-                printf("New latency receive [%s] latency:%ld\n", gst_pad_get_name(pad), latency);
+                fprintf(LOG_HDL, "New latency receive [%s] latency:%ld\n", gst_pad_get_name(pad), latency);
             }
             break;
         default:
@@ -1015,6 +1062,7 @@ gst_base_src_query (GstPad * pad, GstObject * parent, GstQuery * query)
             break;
         case GST_QUERY_LATENCY:
             {
+                /*
                 gboolean live = FALSE;
                 GstClockTime min_latency = 0;
                 GstClockTime max_latency = 0;
@@ -1025,7 +1073,7 @@ gst_base_src_query (GstPad * pad, GstObject * parent, GstQuery * query)
                     printf("\tLatency [%s] live:%d min:%ld max:%ld\n", gst_pad_get_name(pad), live, 
                             min_latency, max_latency);
                 }
-
+                */
 
                 //GstClockTime min = gst_util_uint64_scale_ceil (GST_SECOND, 1, 25);
                 //GstClockTime max = min * 1;
@@ -1057,21 +1105,4 @@ gst_base_src_query (GstPad * pad, GstObject * parent, GstQuery * query)
     }
     return true;
 }
-/*
-   static gboolean
-   plugin_init (GstPlugin *plugin)
-   {
-   gst_element_register (plugin, "tfi_sdi_src", GST_RANK_NONE, GST_TYPE_TFI_SDI_SRC);
-   gst_element_register (plugin, "myfilter", GST_RANK_NONE, GST_TYPE_MYFILTER);
-   return TRUE;
-   }
-
-   GST_PLUGIN_DEFINE (
-   GST_VERSION_MAJOR,
-   GST_VERSION_MINOR,
-   tfi_sdi_src,
-   "TFI SDI source plugin",
-   plugin_init, VERSION, "LGPL", "TFI", "http://www.tfidm.com/"
-   )
-   */
 
